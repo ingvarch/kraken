@@ -78,3 +78,15 @@ jobs:
         with:
           version-file: .tool-versions
           args: release --snapshot --clean
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      # A snapshot skips notarizing, so sign the macOS binaries ad hoc with the
+      # same signer to find a binary it cannot sign before a tag does.
+      - name: sign macOS binaries ad hoc
+        run: |
+          for binary in dist/kraken_*-apple-darwin/kraken; do
+            go run github.com/anchore/quill/cmd/quill@v0.7.1 sign --ad-hoc "$binary"
+          done

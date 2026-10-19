@@ -1,0 +1,8 @@
+# GoReleaser signs the macOS binaries with quill, which adds a code signature
+# command to the Mach-O header. The zig linker of cargo-zigbuild leaves no room
+# there, so ask for the padding Apple's linker leaves.
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-headerpad_max_install_names"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-headerpad_max_install_names"]
