@@ -1,0 +1,80 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: check
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+
+      # A crate kraken links may only have a license about.toml accepts. It runs
+      # after a lint failure too, so one failure does not hide the other.
+      - name: licenses
+        if: success() || failure()
+        run: cargo about generate --fail --output-file /dev/null about.hbs
+
+  test:
+    name: test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-15]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: test
+        run: cargo test --locked
+
+  snapshot:
+    name: release snapshot
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild,cargo-about
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version-file: .tool-versions
+          args: release --snapshot --clean

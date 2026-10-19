@@ -54,10 +54,10 @@ Without a terminal (CI, pipes), kraken needs the level and `--yes`.
 ## Install
 
 ```
-cargo install --path .
+brew install ingvarch/tap/kraken
 ```
 
-Works on macOS and Linux.
+Or download an archive for your platform from the [releases](https://github.com/ingvarch/kraken/releases), or build from source with `cargo install --path .`. kraken works on macOS and Linux.
 
 ## Limits
 
@@ -73,3 +73,11 @@ cargo test
 ```
 
 The tests create temporary git repositories and need `git` and `cargo` on `PATH`.
+
+## Releasing kraken
+
+Release kraken with kraken: `kraken` in this repository bumps `Cargo.toml`, tags and pushes. The tag starts the `release` workflow, which builds the archives with GoReleaser, signs and notarizes the macOS binaries and updates the cask in [ingvarch/homebrew-tap](https://github.com/ingvarch/homebrew-tap). The workflow stops if the tag and the version in `Cargo.toml` differ.
+
+## License
+
+MIT. The archives include `THIRD_PARTY_NOTICES` with the licenses of the crates kraken links.
