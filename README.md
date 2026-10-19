@@ -3,18 +3,19 @@
 Release a project in one command: bump the version, commit, tag, push.
 
 ```
-$ kraken
-Version files: package.json
-Current version: 0.5.0
-? Next version ›
-❯ patch  0.5.1
-  minor  0.6.0
-  major  1.0.0
-Updated package.json, package-lock.json
-Committed "chore(release): v0.5.1"
-Tagged v0.5.1
-? Push main and v0.5.1 to origin? (y/n) › yes
-Pushed main and v0.5.1 to origin
+╭ kraken ──────────────────────────────────────────────────╮
+│                                                          │
+│  Version   1.4.2 from package.json                       │
+│  Branch    main → origin/main                            │
+│                                                          │
+│  Next version                                            │
+│  ❯ patch   1.4.3   bug fixes                             │
+│    minor   1.5.0   new features                          │
+│    major   2.0.0   breaking changes                      │
+│                                                          │
+├──────────────────────────────────────────────────────────┤
+│  ↑↓ choose   enter continue   esc quit                   │
+╰──────────────────────────────────────────────────────────╯
 ```
 
 ## What it does
@@ -43,10 +44,12 @@ If anything fails before the tag exists, kraken moves HEAD back and puts the fil
 kraken [patch|minor|major] [--yes] [--dry-run]
 ```
 
-- `kraken` asks for the level and for the push.
-- `kraken minor` skips the first question.
-- `kraken minor --yes` asks nothing and pushes if `origin` exists. Use this in scripts.
-- `kraken --dry-run` shows what would change and changes nothing.
+- `kraken` opens a full-screen panel: pick the level with the arrow keys (or `j`/`k`), see what the release will change, turn the push on or off with space, and release with enter. `esc` goes back, `q` quits. On enter the panel closes and kraken writes, commits, tags and pushes in the terminal, so git can ask for a passphrase or credentials there.
+- `kraken minor` opens the panel on the confirmation of a minor release.
+- `kraken minor --yes` opens no panel, asks nothing and pushes if `origin` exists. Use this in scripts.
+- `kraken minor --dry-run` shows what would change and changes nothing.
+
+Without a terminal (CI, pipes), kraken needs the level and `--yes`.
 
 ## Install
 

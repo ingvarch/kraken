@@ -111,7 +111,6 @@ fn stdout_of(command: &str, out: Output) -> Result<String> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::time::Instant;
 
     fn sh(script: &str) -> Command {
         let mut command = Command::new("sh");

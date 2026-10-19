@@ -3,11 +3,9 @@ use std::process::ExitCode;
 
 use anyhow::{Result, bail};
 use clap::Parser;
-use dialoguer::theme::ColorfulTheme;
-use dialoguer::{Confirm, Select};
-use kraken::release::{Plan, Release};
-use kraken::version::{Level, bump};
-use semver::Version;
+use kraken::release::{Plan, Release, push_target};
+use kraken::ui::{self, App, Choice, Facts};
+use kraken::version::Level;
 
 /// Bump the project version, tag the release and push it.
 #[derive(Parser)]
@@ -22,7 +20,7 @@ struct Cli {
     yes: bool,
 
     /// Show what would happen and change nothing
-    #[arg(long)]
+    #[arg(long, requires = "level")]
     dry_run: bool,
 }
 
@@ -38,25 +36,22 @@ fn main() -> ExitCode {
 
 fn run(cli: &Cli) -> Result<()> {
     let release = Release::prepare(&std::env::current_dir()?)?;
-    print_summary(&release);
-    if release.remote_branch.is_some() {
-        println!("Checking tags on origin...");
-        if let Some(warning) = release.check_origin_tags()? {
-            eprintln!("warning: {warning}");
-        }
+    if opens_panel(cli, io::stdin().is_terminal(), io::stdout().is_terminal()) {
+        return release_in_panel(&release, cli.level);
     }
 
-    let asks_push = !cli.yes && !cli.dry_run && release.remote_branch.is_some();
-    if (cli.level.is_none() || asks_push) && !in_terminal() {
-        bail!("no terminal to ask in; pass patch, minor or major and --yes");
+    print_summary(&release);
+    if let Some(warning) = check_origin(&release)? {
+        eprintln!("warning: {warning}");
     }
-    let level = match cli.level {
-        Some(level) => level,
-        None => match ask_level(&release.current)? {
-            Some(level) => level,
-            None => return Ok(()),
-        },
+    let Some(level) = cli.level else {
+        bail!(
+            "choosing the level needs stdin and stdout to be a terminal; pass patch, minor or major"
+        );
     };
+    if !cli.yes && !cli.dry_run && release.remote_branch.is_some() {
+        bail!("asking about the push needs stdin and stdout to be a terminal; pass --yes to push");
+    }
     let plan = release.plan(level)?;
 
     if cli.dry_run {
@@ -64,35 +59,82 @@ fn run(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    release.apply(&plan)?;
-    if let Some(message) = &plan.commit {
-        println!("Updated {}", plan.files.join(", "));
-        print_untracked(&plan);
-        println!("Committed \"{message}\"");
-    }
-    println!("Tagged {}", plan.tag);
+    finish(&release, &plan, true)
+}
 
-    let Some(push) = describe_push(&release, &plan) else {
-        println!("No origin remote: nothing to push");
-        return Ok(());
-    };
-    if cli.yes || ask(&format!("Push {push}?"))? {
-        release.push(&plan)?;
-        println!("Pushed {push}");
+/// Writes, commits, tags and pushes in the plain terminal, where git can ask for
+/// passphrases or credentials and ctrl-c works.
+fn finish(release: &Release, plan: &Plan, push: bool) -> Result<()> {
+    release.apply(plan)?;
+    print_applied(plan);
+    match push_of(release, plan) {
+        Some(target) if push => {
+            println!("Pushing {target}...");
+            release.push(plan)?;
+            println!("Pushed {target}");
+        }
+        Some(_) => println!("Not pushed to origin"),
+        None => println!("No origin remote: nothing to push"),
     }
     Ok(())
 }
 
-/// "main and v1.2.4 to origin", naming the remote branch when it differs.
-fn describe_push(release: &Release, plan: &Plan) -> Option<String> {
-    let remote_branch = release.remote_branch.as_ref()?;
-    let branch = &release.branch;
-    let tag = &plan.tag;
-    Some(if *remote_branch == *branch {
-        format!("{branch} and {tag} to origin")
-    } else {
-        format!("{branch} to origin/{remote_branch} and {tag} to origin")
-    })
+/// Asks for the level and confirmations in a full-screen panel, then releases after it closes.
+fn release_in_panel(release: &Release, level: Option<Level>) -> Result<()> {
+    let mut warnings: Vec<String> = release.warning().into_iter().collect();
+    warnings.extend(check_origin(release)?);
+    let facts = Facts {
+        version_files: release
+            .manifests
+            .iter()
+            .map(|manifest| manifest.kind.file_name())
+            .collect(),
+        current: release.current.clone(),
+        latest_tag: release.latest_tag().map(str::to_string),
+        branch: release.branch.clone(),
+        remote_branch: release.remote_branch.clone(),
+        warnings,
+    };
+    let choices = Level::ALL
+        .iter()
+        .map(|&level| Choice {
+            level,
+            plan: release.plan(level).map_err(|err| format!("{err:#}")),
+        })
+        .collect();
+
+    let mut terminal = ratatui::try_init()?;
+    let chosen = ui::run(&mut terminal, App::new(facts, choices, level));
+    // Dropping the terminal shows the cursor again, before git may ask for a passphrase.
+    drop(terminal);
+    ratatui::try_restore()?;
+
+    match chosen? {
+        Some((plan, push)) => finish(release, &plan, push),
+        None => Ok(()),
+    }
+}
+
+/// Returns a warning when origin does not answer; fails when origin has tags missing here.
+fn check_origin(release: &Release) -> Result<Option<String>> {
+    if release.remote_branch.is_none() {
+        return Ok(None);
+    }
+    println!("Checking tags on origin...");
+    release.check_origin_tags()
+}
+
+fn push_of(release: &Release, plan: &Plan) -> Option<String> {
+    push_target(&release.branch, release.remote_branch.as_deref(), &plan.tag)
+}
+
+fn print_applied(plan: &Plan) {
+    if let Some(message) = &plan.commit {
+        println!("Updated {}", plan.files.join(", "));
+        print_untracked(plan);
+        println!("Committed \"{message}\"");
+    }
+    println!("Tagged {}", plan.tag);
 }
 
 fn print_untracked(plan: &Plan) {
@@ -104,8 +146,9 @@ fn print_untracked(plan: &Plan) {
     }
 }
 
-fn in_terminal() -> bool {
-    io::stdin().is_terminal() && io::stderr().is_terminal()
+/// The panel reads keys from stdin and draws on stdout; scripts and pipes get plain output.
+fn opens_panel(cli: &Cli, stdin_is_terminal: bool, stdout_is_terminal: bool) -> bool {
+    !cli.yes && !cli.dry_run && stdin_is_terminal && stdout_is_terminal
 }
 
 fn print_summary(release: &Release) {
@@ -132,28 +175,31 @@ fn print_dry_run(release: &Release, plan: &Plan) {
         println!("  commit \"{message}\"");
     }
     println!("  tag {}", plan.tag);
-    if let Some(push) = describe_push(release, plan) {
+    if let Some(push) = push_of(release, plan) {
         println!("  push {push}");
     }
     print_untracked(plan);
 }
 
-fn ask_level(current: &Version) -> Result<Option<Level>> {
-    let items: Vec<String> = Level::ALL
-        .iter()
-        .map(|&level| format!("{level:<5}  {}", bump(current, level)))
-        .collect();
-    let choice = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Next version")
-        .items(&items)
-        .default(0)
-        .interact_opt()?;
-    Ok(choice.map(|index| Level::ALL[index]))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn ask(question: &str) -> Result<bool> {
-    Ok(Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt(question)
-        .default(true)
-        .interact()?)
+    fn cli(args: &[&str]) -> Cli {
+        Cli::parse_from(std::iter::once("kraken").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn panel_needs_keys_and_a_screen() {
+        assert!(opens_panel(&cli(&[]), true, true));
+        assert!(opens_panel(&cli(&["minor"]), true, true));
+        assert!(!opens_panel(&cli(&[]), true, false));
+        assert!(!opens_panel(&cli(&[]), false, true));
+    }
+
+    #[test]
+    fn yes_and_dry_run_skip_the_panel() {
+        assert!(!opens_panel(&cli(&["patch", "--yes"]), true, true));
+        assert!(!opens_panel(&cli(&["patch", "--dry-run"]), true, true));
+    }
 }

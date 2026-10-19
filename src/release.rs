@@ -17,11 +17,14 @@ pub struct Release {
     pub manifests: Vec<Manifest>,
     pub current: Version,
     latest: Option<(String, Version)>,
+    /// The commit HEAD pointed at when kraken started.
+    head: String,
     pub branch: String,
     /// The branch on origin to push to; `None` without an origin remote.
     pub remote_branch: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
     pub version: Version,
     pub tag: String,
@@ -36,7 +39,7 @@ pub struct Plan {
 impl Release {
     pub fn prepare(dir: &Path) -> Result<Release> {
         let git = Git::discover(dir)?;
-        git.head()?;
+        let head = git.head()?;
         let branch = git.branch()?;
         if git.is_shallow()? {
             bail!(
@@ -57,9 +60,14 @@ impl Release {
             manifests,
             current,
             latest,
+            head,
             branch,
             remote_branch,
         })
+    }
+
+    pub fn latest_tag(&self) -> Option<&str> {
+        self.latest.as_ref().map(|(tag, _)| tag.as_str())
     }
 
     /// Set when the version files and the latest tag disagree.
@@ -141,7 +149,12 @@ impl Release {
 
     /// Writes the version files, commits and tags. On failure puts HEAD and the files back.
     pub fn apply(&self, plan: &Plan) -> Result<()> {
+        // The repository may have changed while the user was choosing.
+        self.git.ensure_clean()?;
         let head = self.git.head()?;
+        if head != self.head || self.git.branch()? != self.branch {
+            bail!("the repository changed since kraken started; run it again");
+        }
         let originals = self.read_files(&plan.files)?;
         let result = self
             .write_files(plan, &originals)
@@ -228,6 +241,16 @@ impl Release {
         }
         Ok(())
     }
+}
+
+/// "main and v1.2.4 to origin", naming the remote branch when it differs; `None` without origin.
+pub fn push_target(branch: &str, remote_branch: Option<&str>, tag: &str) -> Option<String> {
+    let remote_branch = remote_branch?;
+    Some(if remote_branch == branch {
+        format!("{branch} and {tag} to origin")
+    } else {
+        format!("{branch} to origin/{remote_branch} and {tag} to origin")
+    })
 }
 
 /// The version files decide when there are any; otherwise the latest tag does.

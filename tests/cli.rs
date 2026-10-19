@@ -598,7 +598,7 @@ fn asks_for_level_only_in_a_terminal() {
     let repo = Repo::new();
     repo.node();
 
-    assert_failed_with(&repo.kraken(&[]), "no terminal");
+    assert_failed_with(&repo.kraken(&[]), "needs stdin and stdout to be a terminal");
 }
 
 #[test]
@@ -608,7 +608,7 @@ fn asks_to_push_only_in_a_terminal() {
     let origin = bare_origin();
     repo.add_origin(&origin);
 
-    assert_failed_with(&repo.kraken(&["patch"]), "no terminal");
+    assert_failed_with(&repo.kraken(&["patch"]), "pass --yes to push");
     assert!(repo.tags().is_empty());
 }
 
@@ -695,4 +695,57 @@ fn warns_when_origin_is_unreachable() {
         "{}",
         stderr(&out)
     );
+}
+
+#[test]
+fn dry_run_needs_a_level() {
+    let repo = Repo::new();
+    repo.node();
+
+    assert_failed_with(&repo.kraken(&["--dry-run"]), "LEVEL");
+}
+
+#[test]
+fn refuses_to_release_files_changed_after_the_start() {
+    let repo = Repo::new();
+    repo.node();
+    let release = kraken::release::Release::prepare(repo.path()).unwrap();
+    let plan = release.plan(kraken::version::Level::Patch).unwrap();
+    repo.write("package.json", &PACKAGE_JSON.replace("demo", "changed"));
+
+    let err = release.apply(&plan).unwrap_err().to_string();
+
+    assert!(err.contains("uncommitted changes"), "{err}");
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn refuses_to_release_after_a_branch_switch() {
+    let repo = Repo::new();
+    repo.node();
+    let release = kraken::release::Release::prepare(repo.path()).unwrap();
+    let plan = release.plan(kraken::version::Level::Patch).unwrap();
+    repo.git(&["checkout", "-q", "-b", "other"]);
+
+    let err = release.apply(&plan).unwrap_err().to_string();
+
+    assert!(err.contains("changed since kraken started"), "{err}");
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn refuses_to_release_after_a_new_commit() {
+    let repo = Repo::new();
+    repo.node();
+    let release = kraken::release::Release::prepare(repo.path()).unwrap();
+    let plan = release.plan(kraken::version::Level::Patch).unwrap();
+    repo.write("notes.md", "");
+    repo.commit_all();
+    let head = repo.head();
+
+    let err = release.apply(&plan).unwrap_err().to_string();
+
+    assert!(err.contains("changed since kraken started"), "{err}");
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.read("package.json"), PACKAGE_JSON);
 }
