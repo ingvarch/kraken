@@ -294,6 +294,35 @@ impl App {
     }
 }
 
+/// The kraken that rises when a release heads for origin.
+pub const KRAKEN: &str = r#"
+  .-.                              .-.
+ ( @ )                            ( @ )
+  \ \       _.------------._       / /
+   \ \    .'                `.    / /
+    ) )  /   \__        __/   \  ( (
+   / /  |    (@)        (@)    |  \ \
+  ( (   |                      |   ) )
+   \ \   \    .-~~~~~~~~-.    /   / /
+    \ '-. '._  '--------`  _.` .-` /
+     '-. '-._ '-.______.-` _.-` .-`
+  ~~^~~'-.  '-.  \    /  .-`  .-`~~^~~
+   ~~~^~~~'-._ \  \  /  / _.-`~~~^~~~
+  ~~^~~~~~^~~~'~~~~~~~~~~`~~~^~~~~~^~~
+"#;
+
+/// The caption under [`KRAKEN`], centered on it.
+pub fn kraken_caption() -> String {
+    let caption = "RELEASE THE KRAKEN";
+    let width = KRAKEN
+        .lines()
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0);
+    let indent = width.saturating_sub(caption.len()) / 2;
+    format!("{}{caption}", " ".repeat(indent))
+}
+
 /// Runs the panel until the user quits or confirms a release, which it returns with the push choice.
 pub fn run(terminal: &mut DefaultTerminal, mut app: App) -> Result<Option<(Plan, bool)>> {
     loop {
@@ -744,6 +773,26 @@ mod tests {
 
         assert_hides(&app, "too small");
         assert_shows(&app, "enter release");
+    }
+
+    #[test]
+    fn kraken_fits_the_narrowest_panel() {
+        let art: Vec<&str> = KRAKEN.trim_matches('\n').lines().collect();
+        assert!(art.len() > 5);
+        assert!(art.iter().all(|line| line.width() <= MIN_WIDTH as usize));
+    }
+
+    #[test]
+    fn kraken_caption_is_centered_under_the_art() {
+        let width = KRAKEN.lines().map(UnicodeWidthStr::width).max().unwrap();
+        let caption = kraken_caption();
+        let left = caption.len() - caption.trim_start().len();
+
+        assert_eq!(caption.trim(), "RELEASE THE KRAKEN");
+        assert!(
+            left.abs_diff(width - left - caption.trim().len()) <= 1,
+            "{caption:?}"
+        );
     }
 
     #[test]

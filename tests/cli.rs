@@ -370,14 +370,17 @@ fn pushes_branch_and_tag_to_origin() {
     let origin = bare_origin();
     repo.add_origin(&origin);
 
-    assert_ok(&repo.kraken(&["patch", "--yes"]));
+    let out = repo.kraken(&["patch", "--yes"]);
 
+    assert_ok(&out);
     let head = repo.head();
     assert_eq!(git_in(origin.path(), &["rev-parse", "main"]), head);
     assert_eq!(
         git_in(origin.path(), &["rev-parse", "v1.2.4^{commit}"]),
         head
     );
+    // The kraken greets people in the panel, not scripts.
+    assert!(!stdout(&out).contains("RELEASE THE KRAKEN"));
 }
 
 #[test]

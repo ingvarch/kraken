@@ -6,6 +6,7 @@ use clap::Parser;
 use kraken::release::{Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
 use kraken::version::Level;
+use ratatui::crossterm::style::Stylize;
 
 /// Bump the project version, tag the release and push it.
 #[derive(Parser)]
@@ -110,9 +111,24 @@ fn release_in_panel(release: &Release, level: Option<Level>) -> Result<()> {
     ratatui::try_restore()?;
 
     match chosen? {
-        Some((plan, push)) => finish(release, &plan, push),
+        Some((plan, push)) => {
+            if push {
+                release_the_kraken();
+            }
+            finish(release, &plan, push)
+        }
         None => Ok(()),
     }
+}
+
+fn release_the_kraken() {
+    println!();
+    for line in ui::KRAKEN.trim_matches('\n').lines() {
+        println!("{}", line.cyan());
+    }
+    println!();
+    println!("{}", ui::kraken_caption().bold());
+    println!();
 }
 
 /// Returns a warning when origin does not answer; fails when origin has tags missing here.
