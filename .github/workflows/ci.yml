@@ -74,6 +74,13 @@ jobs:
         with:
           tool: cargo-zigbuild,cargo-about
 
+      # A release refuses a dirty tree and a snapshot does not check, so check
+      # here that the steps above left nothing untracked.
+      - name: tree is clean
+        run: |
+          git status --porcelain
+          test -z "$(git status --porcelain)"
+
       - uses: goreleaser/goreleaser-action@v7
         with:
           version-file: .tool-versions
