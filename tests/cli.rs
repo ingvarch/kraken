@@ -235,6 +235,152 @@ fn gradle_properties_patch_release() {
 }
 
 #[test]
+fn xcode_patch_release_sets_every_configuration() {
+    const PBXPROJ: &str = "{\n\t\t\t\tCURRENT_PROJECT_VERSION = 7;\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n\t\t\t\tPRODUCT_NAME = App;\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n}\n";
+    let repo = Repo::new();
+    repo.write("App.xcodeproj/project.pbxproj", PBXPROJ);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("App.xcodeproj/project.pbxproj"),
+        PBXPROJ.replace("MARKETING_VERSION = 1.2.3", "MARKETING_VERSION = 1.2.4")
+    );
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "chore(release): v1.2.4"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn xcode_release_with_a_non_ascii_project_name() {
+    const PBXPROJ: &str = "{\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n}\n";
+    let repo = Repo::new();
+    repo.write("Caf\u{e9}.xcodeproj/project.pbxproj", PBXPROJ);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("Caf\u{e9}.xcodeproj/project.pbxproj"),
+        PBXPROJ.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.git(&[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--name-only",
+            "--format=",
+            "HEAD"
+        ]),
+        "Caf\u{e9}.xcodeproj/project.pbxproj"
+    );
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn xcode_project_that_git_ignores_is_left_alone() {
+    const PBXPROJ: &str = "{\n\t\t\t\tMARKETING_VERSION = 1.0;\n}\n";
+    let repo = Repo::new();
+    repo.write(".gitignore", "*.xcodeproj\n");
+    repo.write("App.xcodeproj/project.pbxproj", PBXPROJ);
+    repo.commit_all();
+    repo.git(&["tag", "v1.2.3"]);
+    let head = repo.head();
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tag_commit("v1.2.4"), head);
+    assert_eq!(repo.read("App.xcodeproj/project.pbxproj"), PBXPROJ);
+}
+
+#[test]
+fn xcode_projects_that_git_ignores_do_not_count_as_several() {
+    const PBXPROJ: &str = "{\n\t\t\t\tMARKETING_VERSION = 1.0;\n}\n";
+    let repo = Repo::new();
+    repo.write(".gitignore", "*.xcodeproj\n");
+    repo.write("App.xcodeproj/project.pbxproj", PBXPROJ);
+    repo.write("Tool.xcodeproj/project.pbxproj", PBXPROJ);
+    repo.commit_all();
+    repo.git(&["tag", "v1.2.3"]);
+    let head = repo.head();
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tag_commit("v1.2.4"), head);
+}
+
+#[test]
+fn xcode_projects_without_a_version_leave_a_node_release_alone() {
+    let repo = Repo::new();
+    for name in ["A", "B"] {
+        repo.write(
+            &format!("{name}.xcodeproj/project.pbxproj"),
+            "{\n\t\t\t\tPRODUCT_NAME = App;\n}\n",
+        );
+    }
+    repo.node();
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(
+        repo.read("package.json"),
+        PACKAGE_JSON.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn symlinked_xcode_project_leaves_a_node_release_alone() {
+    let repo = Repo::new();
+    repo.write(
+        "real/App.xcodeproj/project.pbxproj",
+        "{\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n}\n",
+    );
+    std::os::unix::fs::symlink("real/App.xcodeproj", repo.path().join("App.xcodeproj")).unwrap();
+    repo.node();
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(
+        repo.read("package.json"),
+        PACKAGE_JSON.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn tracked_xcode_project_counts_despite_an_ignore_pattern() {
+    const PBXPROJ: &str = "{\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n}\n";
+    let repo = Repo::new();
+    repo.write(".gitignore", "*.xcodeproj\n");
+    repo.write("App.xcodeproj/project.pbxproj", PBXPROJ);
+    repo.git(&["add", "-f", "App.xcodeproj/project.pbxproj"]);
+    repo.commit_all();
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(
+        repo.read("App.xcodeproj/project.pbxproj"),
+        PBXPROJ.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "chore(release): v1.2.4"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
 fn rust_minor_release_updates_cargo_lock() {
     let repo = Repo::new();
     repo.write("Cargo.toml", CARGO_TOML);

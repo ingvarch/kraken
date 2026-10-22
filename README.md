@@ -5,11 +5,11 @@
 [![License](https://img.shields.io/github/license/ingvarch/kraken)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-dea584?logo=rust&logoColor=black)](Cargo.toml)
 
-kraken releases a project in one command: it bumps the version, commits, tags and pushes. It is for developers who release JavaScript, Deno, Rust, Python, Gradle or Go projects from their own terminal and want the version files, the lock file and the tag to agree. kraken is made by Igor Churmeev.
+kraken releases a project in one command: it bumps the version, commits, tags and pushes. It is for developers who release JavaScript, Deno, Rust, Python, Gradle, Xcode or Go projects from their own terminal and want the version files, the lock file and the tag to agree. kraken is made by Igor Churmeev.
 
 ## Features
 
-- Bumps patch, minor or major in `package.json`, `Cargo.toml`, `pyproject.toml`, `deno.json`, `jsr.json`, `gradle.properties` or `VERSION`, or works with git tags alone
+- Bumps patch, minor or major in `package.json`, `Cargo.toml`, `pyproject.toml`, `deno.json`, `jsr.json`, `gradle.properties`, an Xcode `project.pbxproj` or `VERSION`, or works with git tags alone
 - Changes only the version string: comments, quotes and formatting stay
 - Sets the project's own entry in `package-lock.json`, `Cargo.lock` or `uv.lock`, with no network
 - Refuses a dirty tree, a shallow clone, tags on origin you have not fetched and a version that is not above the latest tag

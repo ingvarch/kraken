@@ -97,15 +97,23 @@ impl Git {
 
     /// The ones among `files` that git tracks.
     pub fn tracked(&self, files: &[&str]) -> Result<Vec<String>> {
-        if files.is_empty() {
-            return Ok(Vec::new());
+        let mut tracked = Vec::new();
+        for file in files {
+            if !self.run(&["ls-files", "-z", "--", file])?.is_empty() {
+                tracked.push(file.to_string());
+            }
         }
-        let list = self.run(&[&["ls-files", "--"], files].concat())?;
-        Ok(list.lines().map(str::to_string).collect())
+        Ok(tracked)
     }
 
+    /// Whether git ignores `path`. A tracked file is never ignored.
+    pub fn is_ignored(&self, path: &str) -> Result<bool> {
+        cmd::run_check("git", &["check-ignore", "-q", "--", path], &self.root)
+    }
+
+    /// Commits `files`, which git must track. `--update` stages them even inside an ignored directory.
     pub fn commit(&self, files: &[&str], message: &str) -> Result<()> {
-        self.run(&[&["add", "--"], files].concat())?;
+        self.run(&[&["add", "--update", "--"], files].concat())?;
         self.run(&["commit", "--quiet", "-m", message]).map(drop)
     }
 

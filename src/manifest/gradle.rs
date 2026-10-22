@@ -1,37 +1,20 @@
 use std::ops::Range;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
+
+use super::{agreed_value, line_values, replace_ranges};
 
 pub fn read_version(text: &str) -> Result<Option<String>> {
-    let mut values = version_values(text).into_iter().map(|range| &text[range]);
-    let Some(first) = values.next() else {
-        return Ok(None);
-    };
-    if let Some(other) = values.find(|value| *value != first) {
-        bail!("version has two values: {first} and {other}");
-    }
-    Ok(Some(first.to_string()))
+    let ranges = line_values(text, version_value);
+    agreed_value("version", text, &ranges)
 }
 
 pub fn set_version(text: &str, version: &str) -> Result<String> {
-    let mut out = text.to_string();
-    for range in version_values(text).into_iter().rev() {
-        out.replace_range(range, version);
-    }
-    Ok(out)
-}
-
-/// The byte ranges of the values on the `version` lines.
-fn version_values(text: &str) -> Vec<Range<usize>> {
-    let mut offset = 0;
-    let mut found = Vec::new();
-    for line in text.split_inclusive('\n') {
-        if let Some(range) = version_value(line) {
-            found.push(offset + range.start..offset + range.end);
-        }
-        offset += line.len();
-    }
-    found
+    Ok(replace_ranges(
+        text,
+        &line_values(text, version_value),
+        version,
+    ))
 }
 
 fn version_value(line: &str) -> Option<Range<usize>> {
