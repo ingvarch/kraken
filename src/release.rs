@@ -24,6 +24,44 @@ pub struct Release {
     pub remote_branch: Option<String>,
 }
 
+/// The version kraken releases from, read without changing or fetching anything.
+pub struct Current {
+    manifests: Vec<Manifest>,
+    pub version: Version,
+    latest: Option<(String, Version)>,
+}
+
+impl Current {
+    /// Reads the version of the project at `dir`. Without version files the tags decide,
+    /// and a shallow clone may miss them.
+    pub fn of(dir: &Path) -> Result<Current> {
+        let git = Git::discover(dir)?;
+        git.head()?;
+        let current = Current::read(&git)?;
+        if current.manifests.is_empty() {
+            git.ensure_not_shallow()?;
+        }
+        Ok(current)
+    }
+
+    fn read(git: &Git) -> Result<Current> {
+        let manifests = manifest::detect(git.root(), |path| git.is_ignored(path))?;
+        let tags = git.merged_tags()?;
+        let latest = latest_release_tag(&tags).map(|(tag, version)| (tag.to_string(), version));
+        let version = current_version(&manifests, latest.as_ref().map(|(_, version)| version))?;
+        Ok(Current {
+            manifests,
+            version,
+            latest,
+        })
+    }
+
+    /// Set when the version files and the latest tag disagree.
+    pub fn warning(&self) -> Option<String> {
+        tag_warning(&self.manifests, &self.version, self.latest.as_ref())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
     pub version: Version,
@@ -41,16 +79,13 @@ impl Release {
         let git = Git::discover(dir)?;
         let head = git.head()?;
         let branch = git.branch()?;
-        if git.is_shallow()? {
-            bail!(
-                "this is a shallow clone and may miss tags; run `git fetch --unshallow --tags` first"
-            );
-        }
+        git.ensure_not_shallow()?;
         git.ensure_clean()?;
-        let manifests = manifest::detect(git.root(), |path| git.is_ignored(path))?;
-        let tags = git.merged_tags()?;
-        let latest = latest_release_tag(&tags).map(|(tag, version)| (tag.to_string(), version));
-        let current = current_version(&manifests, latest.as_ref().map(|(_, version)| version))?;
+        let Current {
+            manifests,
+            version: current,
+            latest,
+        } = Current::read(&git)?;
         let remote_branch = git.has_remote(ORIGIN)?.then(|| {
             git.upstream(&branch, ORIGIN)
                 .unwrap_or_else(|| branch.clone())
@@ -72,13 +107,7 @@ impl Release {
 
     /// Set when the version files and the latest tag disagree.
     pub fn warning(&self) -> Option<String> {
-        let (tag, version) = self.latest.as_ref()?;
-        (!self.manifests.is_empty() && *version != self.current).then(|| {
-            format!(
-                "latest tag {tag} differs from version {} in the version files",
-                self.current
-            )
-        })
+        tag_warning(&self.manifests, &self.current, self.latest.as_ref())
     }
 
     /// Fails when origin has release tags that are missing here.
@@ -254,6 +283,16 @@ pub fn push_target(branch: &str, remote_branch: Option<&str>, tag: &str) -> Opti
     } else {
         format!("{branch} to origin/{remote_branch} and {tag} to origin")
     })
+}
+
+fn tag_warning(
+    manifests: &[Manifest],
+    current: &Version,
+    latest: Option<&(String, Version)>,
+) -> Option<String> {
+    let (tag, version) = latest?;
+    (!manifests.is_empty() && version != current)
+        .then(|| format!("latest tag {tag} differs from version {current} in the version files"))
 }
 
 /// The version files decide when there are any; otherwise the latest tag does.
