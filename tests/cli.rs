@@ -256,6 +256,104 @@ fn xcode_patch_release_sets_every_configuration() {
     assert_eq!(repo.status(), "");
 }
 
+const PROJECT_YML: &str = "name: App\nsettings:\n  base:\n    MARKETING_VERSION: \"1.2.3\" # app\n    CURRENT_PROJECT_VERSION: 7\n";
+const GENERATED_PBXPROJ: &str =
+    "{\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n}\n";
+
+#[test]
+fn xcodegen_release_with_a_tracked_project_commits_both_files() {
+    let repo = Repo::new();
+    repo.write("project.yml", PROJECT_YML);
+    repo.write("App.xcodeproj/project.pbxproj", GENERATED_PBXPROJ);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("project.yml"),
+        PROJECT_YML.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.read("App.xcodeproj/project.pbxproj"),
+        GENERATED_PBXPROJ.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "App.xcodeproj/project.pbxproj\nproject.yml"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn xcodegen_release_with_a_non_ascii_project_name_commits_both_files() {
+    let repo = Repo::new();
+    repo.write(
+        "project.yml",
+        &PROJECT_YML.replace("name: App", "name: Caf\u{e9}"),
+    );
+    repo.write("Caf\u{e9}.xcodeproj/project.pbxproj", GENERATED_PBXPROJ);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.git(&[
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--name-only",
+            "--format=",
+            "HEAD"
+        ]),
+        "Caf\u{e9}.xcodeproj/project.pbxproj\nproject.yml"
+    );
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn xcodegen_release_updates_an_ignored_project_and_leaves_it_out() {
+    let repo = Repo::new();
+    repo.write(".gitignore", "*.xcodeproj\n");
+    repo.write("project.yml", PROJECT_YML);
+    repo.commit_all();
+    repo.write("App.xcodeproj/project.pbxproj", GENERATED_PBXPROJ);
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("App.xcodeproj/project.pbxproj"),
+        GENERATED_PBXPROJ.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "project.yml"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+}
+
+#[test]
+fn xcodegen_release_leaves_an_unrelated_project_alone() {
+    const EXAMPLE: &str = "{\n\t\t\t\tMARKETING_VERSION = 0.1.0;\n}\n";
+    let repo = Repo::new();
+    repo.write(".gitignore", "App.xcodeproj\n");
+    repo.write("project.yml", PROJECT_YML);
+    repo.write("Example.xcodeproj/project.pbxproj", EXAMPLE);
+    repo.commit_all();
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(repo.read("Example.xcodeproj/project.pbxproj"), EXAMPLE);
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "project.yml"
+    );
+    assert_eq!(repo.status(), "");
+}
+
 #[test]
 fn xcode_release_with_a_non_ascii_project_name() {
     const PBXPROJ: &str = "{\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n}\n";

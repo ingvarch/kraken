@@ -4,6 +4,7 @@ mod package_json;
 mod pyproject;
 mod version_file;
 mod xcode;
+mod xcodegen;
 
 use std::fs;
 use std::ops::Range;
@@ -24,11 +25,12 @@ pub enum Kind {
     Deno,
     Jsr,
     Gradle,
+    XcodeGen,
     Xcode,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::PackageJson,
         Kind::CargoToml,
         Kind::Pyproject,
@@ -36,6 +38,7 @@ impl Kind {
         Kind::Deno,
         Kind::Jsr,
         Kind::Gradle,
+        Kind::XcodeGen,
         Kind::Xcode,
     ];
 
@@ -54,6 +57,7 @@ impl Kind {
             Kind::Deno => &["deno.json", "deno.jsonc"],
             Kind::Jsr => &["jsr.json", "jsr.jsonc"],
             Kind::Gradle => &["gradle.properties"],
+            Kind::XcodeGen => &["project.yml"],
             Kind::Xcode => return xcode::find(root, is_ignored),
         };
         for path in names.iter().filter_map(|name| existing(root, name)) {
@@ -70,6 +74,8 @@ impl Kind {
             Kind::PackageJson => "package-lock.json",
             Kind::CargoToml => "Cargo.lock",
             Kind::Pyproject => "uv.lock",
+            // The generated project is updated even when git ignores it.
+            Kind::XcodeGen => return xcodegen::generated_project(root),
             Kind::VersionFile | Kind::Deno | Kind::Jsr | Kind::Gradle | Kind::Xcode => {
                 return Ok(None);
             }
@@ -84,6 +90,7 @@ impl Kind {
             Kind::Pyproject => pyproject::read_version(text),
             Kind::VersionFile => version_file::read_version(text),
             Kind::Gradle => gradle::read_version(text),
+            Kind::XcodeGen => xcodegen::read_version(text),
             Kind::Xcode => xcode::read_version(text),
         }
     }
@@ -95,6 +102,7 @@ impl Kind {
             Kind::Pyproject => pyproject::set_version(text, version),
             Kind::VersionFile => version_file::set_version(text, version),
             Kind::Gradle => gradle::set_version(text, version),
+            Kind::XcodeGen => xcodegen::set_version(text, version),
             Kind::Xcode => xcode::set_version(text, version),
         }
     }
@@ -110,6 +118,7 @@ impl Kind {
             | Kind::Deno
             | Kind::Jsr
             | Kind::Gradle
+            | Kind::XcodeGen
             | Kind::Xcode => Ok(()),
         }
     }
@@ -123,6 +132,7 @@ impl Kind {
                 cargo::set_lock_versions(lock, &members)
             }
             Kind::Pyproject => pyproject::set_uv_lock_version(lock, version),
+            Kind::XcodeGen => xcode::set_version(lock, version),
             Kind::VersionFile | Kind::Deno | Kind::Jsr | Kind::Gradle | Kind::Xcode => {
                 Ok(lock.to_string())
             }
@@ -140,8 +150,13 @@ pub struct Manifest {
 
 /// Manifests in `root` that carry a version. A file that `is_ignored` is skipped.
 pub fn detect(root: &Path, is_ignored: impl Fn(&str) -> Result<bool>) -> Result<Vec<Manifest>> {
-    let mut found = Vec::new();
+    let mut found: Vec<Manifest> = Vec::new();
     for kind in Kind::ALL {
+        let generated =
+            kind == Kind::Xcode && found.iter().any(|manifest| manifest.kind == Kind::XcodeGen);
+        if generated {
+            continue;
+        }
         let Some(path) = kind.find(root, &is_ignored)? else {
             continue;
         };
@@ -384,6 +399,76 @@ mod tests {
         std::os::unix::fs::symlink("real/App.xcodeproj", dir.path().join("App.xcodeproj")).unwrap();
 
         assert_eq!(find(Kind::Xcode, dir.path()), None);
+    }
+
+    #[test]
+    fn xcodegen_takes_over_the_generated_project() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("project.yml"),
+            "name: App\nsettings:\n  MARKETING_VERSION: 1.2.3\n",
+        )
+        .unwrap();
+        fs::create_dir(dir.path().join("App.xcodeproj")).unwrap();
+        fs::write(
+            dir.path().join("App.xcodeproj/project.pbxproj"),
+            "\t\tMARKETING_VERSION = 1.2.3;\n",
+        )
+        .unwrap();
+
+        let found = detect(dir.path(), |_| Ok(false)).unwrap();
+
+        assert_eq!(
+            found,
+            vec![Manifest {
+                kind: Kind::XcodeGen,
+                path: "project.yml".to_string(),
+                lock: Some("App.xcodeproj/project.pbxproj".to_string()),
+                version: Version::new(1, 2, 3)
+            }]
+        );
+    }
+
+    #[test]
+    fn xcodegen_lock_is_the_project_named_in_project_yml() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("project.yml"),
+            "name: App\nsettings:\n  MARKETING_VERSION: 1.2.3\n",
+        )
+        .unwrap();
+        write_project(dir.path(), "Example.xcodeproj", VERSIONED_PBXPROJ);
+        let locks = |root: &Path| -> Vec<Option<String>> {
+            detect(root, |_| Ok(false))
+                .unwrap()
+                .into_iter()
+                .map(|manifest| manifest.lock)
+                .collect()
+        };
+        assert_eq!(locks(dir.path()), [None]);
+
+        write_project(dir.path(), "App.xcodeproj", VERSIONED_PBXPROJ);
+        assert_eq!(
+            locks(dir.path()),
+            [Some("App.xcodeproj/project.pbxproj".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_project_yml_without_a_version_leaves_the_xcode_project() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("project.yml"), "name: App\n").unwrap();
+        fs::create_dir(dir.path().join("App.xcodeproj")).unwrap();
+        fs::write(
+            dir.path().join("App.xcodeproj/project.pbxproj"),
+            "\t\tMARKETING_VERSION = 1.2.3;\n",
+        )
+        .unwrap();
+
+        let found = detect(dir.path(), |_| Ok(false)).unwrap();
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, Kind::Xcode);
     }
 
     #[test]
