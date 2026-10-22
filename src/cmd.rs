@@ -6,16 +6,31 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 
 /// Runs a program in `dir` and returns its trimmed stdout.
 pub fn run(program: &str, args: &[&str], dir: &Path) -> Result<String> {
+    let (name, out) = output(program, args, dir)?;
+    stdout_of(&name, out)
+}
+
+/// Runs a program in `dir`: exit code 0 is `true`, 1 is `false`, anything else is an error.
+pub fn run_check(program: &str, args: &[&str], dir: &Path) -> Result<bool> {
+    let (name, out) = output(program, args, dir)?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(failure(&name, &out)),
+    }
+}
+
+fn output(program: &str, args: &[&str], dir: &Path) -> Result<(String, Output)> {
     let mut command = Command::new(program);
     command.args(args).current_dir(dir);
     let out = command
         .output()
         .with_context(|| format!("could not run {program}"))?;
-    stdout_of(&describe(&command), out)
+    Ok((describe(&command), out))
 }
 
 /// Like [`run`], but stops the program, and everything it started, when it runs longer than `limit`.
@@ -94,17 +109,22 @@ fn describe(command: &Command) -> String {
 
 fn stdout_of(command: &str, out: Output) -> Result<String> {
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let reason = [stderr.trim(), stdout.trim()]
-            .into_iter()
-            .find(|text| !text.is_empty());
-        match reason {
-            Some(reason) => bail!("`{command}` failed: {reason}"),
-            None => bail!("`{command}` failed"),
-        }
+        return Err(failure(command, &out));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The error for a failed `command`, with what it printed.
+fn failure(command: &str, out: &Output) -> anyhow::Error {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let reason = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .find(|text| !text.is_empty());
+    match reason {
+        Some(reason) => anyhow!("`{command}` failed: {reason}"),
+        None => anyhow!("`{command}` failed"),
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +210,14 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.ends_with("failed: nothing to commit"), "{err}");
+    }
+
+    #[test]
+    fn check_maps_exit_codes() {
+        let check = |code: i32| run_check("sh", &["-c", &format!("exit {code}")], Path::new("."));
+        assert!(check(0).unwrap());
+        assert!(!check(1).unwrap());
+        assert!(check(128).unwrap_err().to_string().ends_with("failed"));
     }
 
     #[test]

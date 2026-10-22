@@ -47,7 +47,7 @@ impl Release {
             );
         }
         git.ensure_clean()?;
-        let manifests = manifest::detect(git.root())?;
+        let manifests = manifest::detect(git.root(), |path| git.is_ignored(path))?;
         let tags = git.merged_tags()?;
         let latest = latest_release_tag(&tags).map(|(tag, version)| (tag.to_string(), version));
         let current = current_version(&manifests, latest.as_ref().map(|(_, version)| version))?;
@@ -322,6 +322,7 @@ mod tests {
                 Kind::Deno => "deno.json",
                 Kind::Jsr => "jsr.json",
                 Kind::Gradle => "gradle.properties",
+                Kind::Xcode => "App.xcodeproj/project.pbxproj",
             }
             .to_string(),
             lock: None,

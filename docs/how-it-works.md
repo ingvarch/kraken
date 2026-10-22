@@ -18,9 +18,12 @@ kraken looks for version files in the repository root:
 | `deno.json` or `deno.jsonc` | `version` |
 | `jsr.json` or `jsr.jsonc` | `version` |
 | `gradle.properties` | the `version` line |
+| `<Name>.xcodeproj/project.pbxproj` | every `MARKETING_VERSION` line |
 | `VERSION` | the whole file: the text without the whitespace around it |
 
 If no file carries a version (a Go module, a `dynamic` Python version, anything else), kraken works with git tags only.
+
+kraken skips a version file that git ignores, such as an Xcode project that a tool generates.
 
 ## Current and next version
 
