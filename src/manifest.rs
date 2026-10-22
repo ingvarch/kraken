@@ -18,25 +18,31 @@ pub enum Kind {
     CargoToml,
     Pyproject,
     VersionFile,
+    Deno,
+    Jsr,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 4] = [
+    pub const ALL: [Kind; 6] = [
         Kind::PackageJson,
         Kind::CargoToml,
         Kind::Pyproject,
         Kind::VersionFile,
+        Kind::Deno,
+        Kind::Jsr,
     ];
 
     /// The path of this kind's file in `root`, relative to it, or `None` when there is none.
     pub fn find(self, root: &Path) -> Result<Option<String>> {
-        let name = match self {
-            Kind::PackageJson => "package.json",
-            Kind::CargoToml => "Cargo.toml",
-            Kind::Pyproject => "pyproject.toml",
-            Kind::VersionFile => "VERSION",
+        let names: &[&str] = match self {
+            Kind::PackageJson => &["package.json"],
+            Kind::CargoToml => &["Cargo.toml"],
+            Kind::Pyproject => &["pyproject.toml"],
+            Kind::VersionFile => &["VERSION"],
+            Kind::Deno => &["deno.json", "deno.jsonc"],
+            Kind::Jsr => &["jsr.json", "jsr.jsonc"],
         };
-        Ok(existing(root, name))
+        Ok(names.iter().find_map(|name| existing(root, name)))
     }
 
     /// The path of this kind's lock file in `root`, relative to it, or `None` when there is none.
@@ -45,14 +51,14 @@ impl Kind {
             Kind::PackageJson => "package-lock.json",
             Kind::CargoToml => "Cargo.lock",
             Kind::Pyproject => "uv.lock",
-            Kind::VersionFile => return Ok(None),
+            Kind::VersionFile | Kind::Deno | Kind::Jsr => return Ok(None),
         };
         Ok(existing(root, name))
     }
 
     pub fn read_version(self, text: &str) -> Result<Option<String>> {
         match self {
-            Kind::PackageJson => package_json::read_version(text),
+            Kind::PackageJson | Kind::Deno | Kind::Jsr => package_json::read_version(text),
             Kind::CargoToml => cargo::read_version(text),
             Kind::Pyproject => pyproject::read_version(text),
             Kind::VersionFile => version_file::read_version(text),
@@ -61,7 +67,7 @@ impl Kind {
 
     pub fn set_version(self, text: &str, version: &str) -> Result<String> {
         match self {
-            Kind::PackageJson => package_json::set_version(text, version),
+            Kind::PackageJson | Kind::Deno | Kind::Jsr => package_json::set_version(text, version),
             Kind::CargoToml => cargo::set_version(text, version),
             Kind::Pyproject => pyproject::set_version(text, version),
             Kind::VersionFile => version_file::set_version(text, version),
@@ -73,7 +79,9 @@ impl Kind {
     pub fn check_requirements(self, root: &Path) -> Result<()> {
         match self {
             Kind::CargoToml => cargo::check_path_requirements(&cargo::workspace_members(root)?),
-            Kind::PackageJson | Kind::Pyproject | Kind::VersionFile => Ok(()),
+            Kind::PackageJson | Kind::Pyproject | Kind::VersionFile | Kind::Deno | Kind::Jsr => {
+                Ok(())
+            }
         }
     }
 
@@ -86,7 +94,7 @@ impl Kind {
                 cargo::set_lock_versions(lock, &members)
             }
             Kind::Pyproject => pyproject::set_uv_lock_version(lock, version),
-            Kind::VersionFile => Ok(lock.to_string()),
+            Kind::VersionFile | Kind::Deno | Kind::Jsr => Ok(lock.to_string()),
         }
     }
 }
@@ -210,6 +218,50 @@ mod tests {
                 version: Version::new(1, 2, 3)
             }]
         );
+    }
+
+    #[test]
+    fn find_falls_back_to_the_jsonc_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Kind::Deno.find(dir.path()).unwrap(), None);
+        assert_eq!(Kind::Jsr.find(dir.path()).unwrap(), None);
+
+        fs::write(dir.path().join("deno.jsonc"), "{}").unwrap();
+        fs::write(dir.path().join("jsr.jsonc"), "{}").unwrap();
+        assert_eq!(
+            Kind::Deno.find(dir.path()).unwrap().as_deref(),
+            Some("deno.jsonc")
+        );
+        assert_eq!(
+            Kind::Jsr.find(dir.path()).unwrap().as_deref(),
+            Some("jsr.jsonc")
+        );
+
+        fs::write(dir.path().join("deno.json"), "{}").unwrap();
+        fs::write(dir.path().join("jsr.json"), "{}").unwrap();
+        assert_eq!(
+            Kind::Deno.find(dir.path()).unwrap().as_deref(),
+            Some("deno.json")
+        );
+        assert_eq!(
+            Kind::Jsr.find(dir.path()).unwrap().as_deref(),
+            Some("jsr.json")
+        );
+    }
+
+    #[test]
+    fn deno_and_jsr_are_two_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("deno.json"), r#"{ "version": "1.2.3" }"#).unwrap();
+        fs::write(dir.path().join("jsr.jsonc"), r#"{ "version": "1.2.3" }"#).unwrap();
+
+        let found = detect(dir.path()).unwrap();
+
+        let paths: Vec<_> = found
+            .iter()
+            .map(|manifest| manifest.path.as_str())
+            .collect();
+        assert_eq!(paths, ["deno.json", "jsr.jsonc"]);
     }
 
     #[test]

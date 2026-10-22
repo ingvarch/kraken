@@ -191,6 +191,28 @@ fn version_file_patch_release() {
 }
 
 #[test]
+fn deno_jsonc_patch_release_keeps_comments() {
+    const DENO_JSONC: &str = "{\n  // published to JSR\n  \"name\": \"@demo/app\",\n  \"version\": \"1.2.3\", // bumped by kraken\n  \"exports\": \"./mod.ts\"\n}\n";
+    let repo = Repo::new();
+    repo.write("deno.jsonc", DENO_JSONC);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("deno.jsonc"),
+        DENO_JSONC.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "chore(release): v1.2.4"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
 fn rust_minor_release_updates_cargo_lock() {
     let repo = Repo::new();
     repo.write("Cargo.toml", CARGO_TOML);
