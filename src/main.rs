@@ -88,7 +88,7 @@ fn release_in_panel(release: &Release, level: Option<Level>) -> Result<()> {
         version_files: release
             .manifests
             .iter()
-            .map(|manifest| manifest.kind.file_name())
+            .map(|manifest| manifest.path.clone())
             .collect(),
         current: release.current.clone(),
         latest_tag: release.latest_tag().map(str::to_string),
@@ -174,7 +174,7 @@ fn print_summary(release: &Release) {
         let names: Vec<_> = release
             .manifests
             .iter()
-            .map(|manifest| manifest.kind.file_name())
+            .map(|manifest| manifest.path.as_str())
             .collect();
         println!("Version files: {}", names.join(", "));
     }

@@ -19,7 +19,7 @@ const WARNING_LINES: usize = 2;
 
 /// What the panel shows about the repository.
 pub struct Facts {
-    pub version_files: Vec<&'static str>,
+    pub version_files: Vec<String>,
     pub current: Version,
     pub latest_tag: Option<String>,
     pub branch: String,
@@ -444,7 +444,7 @@ mod tests {
 
     fn facts() -> Facts {
         Facts {
-            version_files: vec!["package.json"],
+            version_files: vec!["package.json".to_string()],
             current: v("1.2.3"),
             latest_tag: Some("v1.2.3".to_string()),
             branch: "main".to_string(),
@@ -459,7 +459,7 @@ mod tests {
             version: v(version),
             commit: Some(format!("chore(release): {tag}")),
             tag,
-            files: vec!["package.json", "package-lock.json"],
+            files: vec!["package.json".to_string(), "package-lock.json".to_string()],
             untracked: vec![],
         }
     }
@@ -689,7 +689,7 @@ mod tests {
     fn mentions_untracked_files() {
         let mut choices = choices();
         if let Ok(plan) = &mut choices[0].plan {
-            plan.untracked = vec!["Cargo.lock"];
+            plan.untracked = vec!["Cargo.lock".to_string()];
         }
         let mut app = App::new(facts(), choices, None);
         press(&mut app, KeyCode::Enter);
@@ -766,7 +766,7 @@ mod tests {
         facts.warnings = vec![git_rejection(), git_rejection()];
         let mut choices = choices();
         if let Ok(plan) = &mut choices[0].plan {
-            plan.untracked = vec!["Cargo.lock"];
+            plan.untracked = vec!["Cargo.lock".to_string()];
         }
         let mut app = App::new(facts, choices, None);
         press(&mut app, KeyCode::Enter);

@@ -21,20 +21,24 @@ pub enum Kind {
 impl Kind {
     pub const ALL: [Kind; 3] = [Kind::PackageJson, Kind::CargoToml, Kind::Pyproject];
 
-    pub fn file_name(self) -> &'static str {
-        match self {
+    /// The path of this kind's file in `root`, relative to it, or `None` when there is none.
+    pub fn find(self, root: &Path) -> Result<Option<String>> {
+        let name = match self {
             Kind::PackageJson => "package.json",
             Kind::CargoToml => "Cargo.toml",
             Kind::Pyproject => "pyproject.toml",
-        }
+        };
+        Ok(existing(root, name))
     }
 
-    pub fn lock_file(self) -> &'static str {
-        match self {
+    /// The path of this kind's lock file in `root`, relative to it, or `None` when there is none.
+    pub fn lock_file(self, root: &Path) -> Result<Option<String>> {
+        let name = match self {
             Kind::PackageJson => "package-lock.json",
             Kind::CargoToml => "Cargo.lock",
             Kind::Pyproject => "uv.lock",
-        }
+        };
+        Ok(existing(root, name))
     }
 
     pub fn read_version(self, text: &str) -> Result<Option<String>> {
@@ -64,21 +68,22 @@ impl Kind {
 
     /// The lock file text for the manifest in `root` that now has `version`.
     pub fn update_lock(self, root: &Path, version: &str, lock: &str) -> Result<String> {
-        let updated = match self {
+        match self {
             Kind::PackageJson => package_json::set_lock_version(lock, version),
             Kind::CargoToml => {
                 let members = cargo::workspace_members(root)?;
                 cargo::set_lock_versions(lock, &members)
             }
             Kind::Pyproject => pyproject::set_uv_lock_version(lock, version),
-        };
-        updated.with_context(|| self.lock_file())
+        }
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Manifest {
     pub kind: Kind,
+    pub path: String,
+    pub lock: Option<String>,
     pub version: Version,
 }
 
@@ -86,20 +91,29 @@ pub struct Manifest {
 pub fn detect(root: &Path) -> Result<Vec<Manifest>> {
     let mut found = Vec::new();
     for kind in Kind::ALL {
-        let path = root.join(kind.file_name());
-        if !path.exists() {
+        let Some(path) = kind.find(root)? else {
             continue;
-        }
-        let version = fs::read_to_string(&path)
+        };
+        let version = fs::read_to_string(root.join(&path))
             .map_err(anyhow::Error::from)
             .and_then(|text| kind.read_version(&text))
             .and_then(|version| version.as_deref().map(parse_release).transpose())
-            .with_context(|| kind.file_name())?;
+            .with_context(|| path.clone())?;
         if let Some(version) = version {
-            found.push(Manifest { kind, version });
+            let lock = kind.lock_file(root)?;
+            found.push(Manifest {
+                kind,
+                path,
+                lock,
+                version,
+            });
         }
     }
     Ok(found)
+}
+
+fn existing(root: &Path, name: &str) -> Option<String> {
+    root.join(name).exists().then(|| name.to_string())
 }
 
 fn toml_str<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a str> {
@@ -174,6 +188,8 @@ mod tests {
             found,
             vec![Manifest {
                 kind: Kind::CargoToml,
+                path: "Cargo.toml".to_string(),
+                lock: None,
                 version: Version::new(1, 2, 3)
             }]
         );
