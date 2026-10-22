@@ -1,6 +1,7 @@
 mod cargo;
 mod package_json;
 mod pyproject;
+mod version_file;
 
 use std::fs;
 use std::path::Path;
@@ -16,10 +17,16 @@ pub enum Kind {
     PackageJson,
     CargoToml,
     Pyproject,
+    VersionFile,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 3] = [Kind::PackageJson, Kind::CargoToml, Kind::Pyproject];
+    pub const ALL: [Kind; 4] = [
+        Kind::PackageJson,
+        Kind::CargoToml,
+        Kind::Pyproject,
+        Kind::VersionFile,
+    ];
 
     /// The path of this kind's file in `root`, relative to it, or `None` when there is none.
     pub fn find(self, root: &Path) -> Result<Option<String>> {
@@ -27,6 +34,7 @@ impl Kind {
             Kind::PackageJson => "package.json",
             Kind::CargoToml => "Cargo.toml",
             Kind::Pyproject => "pyproject.toml",
+            Kind::VersionFile => "VERSION",
         };
         Ok(existing(root, name))
     }
@@ -37,6 +45,7 @@ impl Kind {
             Kind::PackageJson => "package-lock.json",
             Kind::CargoToml => "Cargo.lock",
             Kind::Pyproject => "uv.lock",
+            Kind::VersionFile => return Ok(None),
         };
         Ok(existing(root, name))
     }
@@ -46,6 +55,7 @@ impl Kind {
             Kind::PackageJson => package_json::read_version(text),
             Kind::CargoToml => cargo::read_version(text),
             Kind::Pyproject => pyproject::read_version(text),
+            Kind::VersionFile => version_file::read_version(text),
         }
     }
 
@@ -54,6 +64,7 @@ impl Kind {
             Kind::PackageJson => package_json::set_version(text, version),
             Kind::CargoToml => cargo::set_version(text, version),
             Kind::Pyproject => pyproject::set_version(text, version),
+            Kind::VersionFile => version_file::set_version(text, version),
         }
     }
 
@@ -62,7 +73,7 @@ impl Kind {
     pub fn check_requirements(self, root: &Path) -> Result<()> {
         match self {
             Kind::CargoToml => cargo::check_path_requirements(&cargo::workspace_members(root)?),
-            Kind::PackageJson | Kind::Pyproject => Ok(()),
+            Kind::PackageJson | Kind::Pyproject | Kind::VersionFile => Ok(()),
         }
     }
 
@@ -75,6 +86,7 @@ impl Kind {
                 cargo::set_lock_versions(lock, &members)
             }
             Kind::Pyproject => pyproject::set_uv_lock_version(lock, version),
+            Kind::VersionFile => Ok(lock.to_string()),
         }
     }
 }
@@ -112,8 +124,13 @@ pub fn detect(root: &Path) -> Result<Vec<Manifest>> {
     Ok(found)
 }
 
+/// `name` when `root` has a regular file with exactly that name, whatever the file system's case rules.
 fn existing(root: &Path, name: &str) -> Option<String> {
-    root.join(name).exists().then(|| name.to_string())
+    fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .any(|entry| entry.file_name() == name && entry.path().is_file())
+        .then(|| name.to_string())
 }
 
 fn toml_str<'a>(doc: &'a DocumentMut, path: &[&str]) -> Option<&'a str> {
@@ -192,6 +209,24 @@ mod tests {
                 lock: None,
                 version: Version::new(1, 2, 3)
             }]
+        );
+    }
+
+    #[test]
+    fn version_file_must_be_a_regular_file_named_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("VERSION")).unwrap();
+        assert_eq!(Kind::VersionFile.find(dir.path()).unwrap(), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("version"), "1.2.3").unwrap();
+        assert_eq!(Kind::VersionFile.find(dir.path()).unwrap(), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("VERSION"), "1.2.3").unwrap();
+        assert_eq!(
+            Kind::VersionFile.find(dir.path()).unwrap().as_deref(),
+            Some("VERSION")
         );
     }
 

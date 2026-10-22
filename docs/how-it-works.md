@@ -15,6 +15,7 @@ kraken looks for version files in the repository root:
 | `package.json` | `version` |
 | `Cargo.toml` | `[package].version` or `[workspace.package].version` |
 | `pyproject.toml` | `[project].version` or `[tool.poetry].version` |
+| `VERSION` | the whole file: the text without the whitespace around it |
 
 If no file carries a version (a Go module, a `dynamic` Python version, anything else), kraken works with git tags only.
 

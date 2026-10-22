@@ -318,6 +318,7 @@ mod tests {
                 Kind::PackageJson => "package.json",
                 Kind::CargoToml => "Cargo.toml",
                 Kind::Pyproject => "pyproject.toml",
+                Kind::VersionFile => "VERSION",
             }
             .to_string(),
             lock: None,
