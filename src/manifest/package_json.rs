@@ -79,6 +79,14 @@ mod tests {
     }
 
     #[test]
+    fn keeps_jsonc_comments() {
+        let text = "{\n  // the release\n  \"version\": \"1.2.3\", /* current */\n  \"name\": \"demo\",\n}\n";
+        let expected = text.replace("1.2.3", "1.2.4");
+        assert_eq!(read_version(text).unwrap().as_deref(), Some("1.2.3"));
+        assert_eq!(set_version(text, "1.2.4").unwrap(), expected);
+    }
+
+    #[test]
     fn sets_lock_root_and_own_package_entry() {
         let lock = r#"{
   "name": "demo",

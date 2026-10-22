@@ -319,6 +319,8 @@ mod tests {
                 Kind::CargoToml => "Cargo.toml",
                 Kind::Pyproject => "pyproject.toml",
                 Kind::VersionFile => "VERSION",
+                Kind::Deno => "deno.json",
+                Kind::Jsr => "jsr.json",
             }
             .to_string(),
             lock: None,
