@@ -35,6 +35,15 @@ impl Git {
         Ok(self.run(&["rev-parse", "--is-shallow-repository"])? == "true")
     }
 
+    pub fn ensure_not_shallow(&self) -> Result<()> {
+        if self.is_shallow()? {
+            bail!(
+                "this is a shallow clone and may miss tags; run `git fetch --unshallow --tags` first"
+            );
+        }
+        Ok(())
+    }
+
     pub fn ensure_clean(&self) -> Result<()> {
         if !self
             .run(&["status", "--porcelain", "--untracked-files=no"])?

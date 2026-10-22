@@ -67,6 +67,17 @@ fn kraken_in(dir: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
+fn shallow_clone(source: &Repo) -> (TempDir, std::path::PathBuf) {
+    let holder = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", source.path().display());
+    git_in(
+        holder.path(),
+        &["clone", "-q", "--depth", "1", &url, "repo"],
+    );
+    let path = holder.path().join("repo");
+    (holder, path)
+}
+
 fn bare_origin() -> TempDir {
     let origin = tempfile::tempdir().unwrap();
     git_in(origin.path(), &["init", "-q", "--bare"]);
@@ -884,14 +895,9 @@ fn refuses_shallow_clone() {
     source.node();
     source.write("a.txt", "");
     source.commit_all();
-    let clone = tempfile::tempdir().unwrap();
-    let url = format!("file://{}", source.path().display());
-    git_in(clone.path(), &["clone", "-q", "--depth", "1", &url, "repo"]);
+    let (_holder, clone) = shallow_clone(&source);
 
-    assert_failed_with(
-        &kraken_in(&clone.path().join("repo"), &["patch", "--yes"]),
-        "shallow",
-    );
+    assert_failed_with(&kraken_in(&clone, &["patch", "--yes"]), "shallow");
 }
 
 #[test]
@@ -1057,4 +1063,202 @@ fn refuses_to_release_after_a_new_commit() {
     assert!(err.contains("changed since kraken started"), "{err}");
     assert_eq!(repo.head(), head);
     assert_eq!(repo.read("package.json"), PACKAGE_JSON);
+}
+
+#[test]
+fn version_prints_the_version_from_version_files() {
+    let repo = Repo::new();
+    repo.node();
+
+    let out = repo.kraken(&["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.2.3\n");
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn version_prints_the_latest_tag_without_version_files() {
+    let repo = Repo::new();
+    repo.write("main.go", "package main\n");
+    repo.commit_all();
+    repo.git(&["tag", "v1.2.3"]);
+
+    let out = repo.kraken(&["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.2.3\n");
+}
+
+#[test]
+fn version_is_zero_without_version_files_or_tags() {
+    let repo = Repo::new();
+    repo.write("main.go", "package main\n");
+    repo.commit_all();
+
+    let out = repo.kraken(&["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "0.0.0\n");
+}
+
+#[test]
+fn version_allows_uncommitted_changes() {
+    let repo = Repo::new();
+    repo.node();
+    repo.write("package.json", &PACKAGE_JSON.replace("1.2.3", "1.5.0"));
+
+    let out = repo.kraken(&["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.5.0\n");
+}
+
+#[test]
+fn version_allows_a_detached_head() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["checkout", "-q", "--detach"]);
+
+    let out = repo.kraken(&["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.2.3\n");
+}
+
+#[test]
+fn version_warns_on_stderr_when_latest_tag_differs() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.0.0"]);
+
+    let out = repo.kraken(&["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.2.3\n");
+    assert_eq!(
+        stderr(&out),
+        "warning: latest tag v1.0.0 differs from version 1.2.3 in the version files\n"
+    );
+}
+
+#[test]
+fn version_refuses_disagreeing_version_files() {
+    let repo = Repo::new();
+    repo.write("package.json", PACKAGE_JSON);
+    repo.write(
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"1.3.0\"\n",
+    );
+    repo.commit_all();
+
+    let out = repo.kraken(&["version"]);
+
+    assert_failed_with(&out, "version files disagree");
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn version_makes_no_commit_and_no_tag() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.0.0"]);
+    let head = repo.head();
+    let tags = repo.tags();
+
+    assert_ok(&repo.kraken(&["version"]));
+
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tags(), tags);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn version_does_not_ask_origin() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["remote", "add", "origin", "/nonexistent/origin"]);
+
+    let out = repo.kraken(&["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stderr(&out), "");
+}
+
+#[test]
+fn version_refuses_a_shallow_clone_that_needs_tags() {
+    let source = Repo::new();
+    source.write("main.go", "package main\n");
+    source.commit_all();
+    source.git(&["tag", "v1.0.0"]);
+    source.write("a.txt", "");
+    source.commit_all();
+    let (_holder, clone) = shallow_clone(&source);
+
+    assert_failed_with(&kraken_in(&clone, &["version"]), "shallow");
+}
+
+#[test]
+fn version_works_in_a_shallow_clone_with_version_files() {
+    let source = Repo::new();
+    source.node();
+    source.write("a.txt", "");
+    source.commit_all();
+    let (_holder, clone) = shallow_clone(&source);
+
+    let out = kraken_in(&clone, &["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.2.3\n");
+}
+
+#[test]
+fn version_refuses_repository_without_commits() {
+    let repo = Repo::new();
+    repo.write("package.json", PACKAGE_JSON);
+
+    assert_failed_with(&repo.kraken(&["version"]), "no commits");
+}
+
+#[test]
+fn version_refuses_outside_git() {
+    let dir = tempfile::tempdir().unwrap();
+
+    assert_failed_with(
+        &kraken_in(dir.path(), &["version"]),
+        "not inside a git repository",
+    );
+}
+
+#[test]
+fn help_is_not_a_subcommand() {
+    let repo = Repo::new();
+    repo.node();
+
+    assert_failed_with(&repo.kraken(&["help"]), "invalid value 'help'");
+}
+
+#[test]
+fn version_takes_no_flags() {
+    let repo = Repo::new();
+    repo.node();
+
+    for flag in ["--yes", "--dry-run"] {
+        let out = repo.kraken(&["version", flag]);
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+        assert!(stderr(&out).contains("unexpected argument"), "{flag}");
+    }
+}
+
+#[test]
+fn dash_dash_version_still_prints_kraken_version() {
+    let repo = Repo::new();
+
+    let out = repo.kraken(&["--version"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        stdout(&out),
+        format!("kraken {}\n", env!("CARGO_PKG_VERSION"))
+    );
 }

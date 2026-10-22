@@ -2,16 +2,23 @@ use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
 use anyhow::{Result, bail};
-use clap::Parser;
-use kraken::release::{Plan, Release, push_target};
+use clap::{Parser, Subcommand};
+use kraken::release::{Current, Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
 use kraken::version::Level;
 use ratatui::crossterm::style::Stylize;
 
 /// Bump the project version, tag the release and push it.
 #[derive(Parser)]
-#[command(version)]
+#[command(
+    version,
+    args_conflicts_with_subcommands = true,
+    disable_help_subcommand = true
+)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Part of the version to bump; asks when omitted
     #[arg(value_enum)]
     level: Option<Level>,
@@ -25,6 +32,12 @@ struct Cli {
     dry_run: bool,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Print the project's current version and change nothing
+    Version,
+}
+
 fn main() -> ExitCode {
     match run(&Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -36,6 +49,9 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<()> {
+    if let Some(Command::Version) = cli.command {
+        return print_version();
+    }
     let release = Release::prepare(&std::env::current_dir()?)?;
     if opens_panel(cli, io::stdin().is_terminal(), io::stdout().is_terminal()) {
         return release_in_panel(&release, cli.level);
@@ -61,6 +77,15 @@ fn run(cli: &Cli) -> Result<()> {
     }
 
     finish(&release, &plan, true)
+}
+
+fn print_version() -> Result<()> {
+    let current = Current::of(&std::env::current_dir()?)?;
+    if let Some(warning) = current.warning() {
+        eprintln!("warning: {warning}");
+    }
+    println!("{}", current.version);
+    Ok(())
 }
 
 /// Writes, commits, tags and pushes in the plain terminal, where git can ask for
