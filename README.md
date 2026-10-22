@@ -9,7 +9,7 @@ kraken releases a project in one command: it bumps the version, commits, tags an
 
 ## Features
 
-- Bumps patch, minor or major in `package.json`, `Cargo.toml` or `pyproject.toml`, or works with git tags alone
+- Bumps patch, minor or major in `package.json`, `Cargo.toml`, `pyproject.toml` or `VERSION`, or works with git tags alone
 - Changes only the version string: comments, quotes and formatting stay
 - Sets the project's own entry in `package-lock.json`, `Cargo.lock` or `uv.lock`, with no network
 - Refuses a dirty tree, a shallow clone, tags on origin you have not fetched and a version that is not above the latest tag
