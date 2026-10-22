@@ -29,9 +29,9 @@ pub struct Plan {
     pub version: Version,
     pub tag: String,
     /// Files the release rewrites, relative to the repository root.
-    pub files: Vec<&'static str>,
+    pub files: Vec<String>,
     /// Rewritten files that git does not track; they stay out of the commit.
-    pub untracked: Vec<&'static str>,
+    pub untracked: Vec<String>,
     /// Commit message; `None` when there are no version files and only HEAD gets tagged.
     pub commit: Option<String>,
 }
@@ -115,26 +115,22 @@ impl Release {
 
         let mut files = Vec::new();
         for manifest in &self.manifests {
-            files.push(manifest.kind.file_name());
-            if self.git.root().join(manifest.kind.lock_file()).exists() {
-                files.push(manifest.kind.lock_file());
-            }
+            files.push(manifest.path.clone());
+            files.extend(manifest.lock.clone());
         }
-        let tracked = self.git.tracked(&files)?;
-        let untracked: Vec<_> = files
+        let file_refs: Vec<&str> = files.iter().map(String::as_str).collect();
+        let tracked = self.git.tracked(&file_refs)?;
+        let untracked: Vec<String> = files
             .iter()
-            .copied()
-            .filter(|file| !tracked.iter().any(|tracked| tracked == file))
+            .filter(|file| !tracked.contains(file))
+            .cloned()
             .collect();
         if let Some(manifest) = self
             .manifests
             .iter()
-            .find(|manifest| untracked.contains(&manifest.kind.file_name()))
+            .find(|manifest| untracked.contains(&manifest.path))
         {
-            bail!(
-                "{} is not tracked by git; commit it first",
-                manifest.kind.file_name()
-            );
+            bail!("{} is not tracked by git; commit it first", manifest.path);
         }
 
         let commit = (!files.is_empty()).then(|| format!("chore(release): {tag}"));
@@ -176,32 +172,39 @@ impl Release {
             .context("push failed; the release commit and tag stay local")
     }
 
-    fn read_files(&self, files: &[&'static str]) -> Result<HashMap<&'static str, String>> {
+    fn read_files(&self, files: &[String]) -> Result<HashMap<String, String>> {
         files
             .iter()
-            .map(|&file| Ok((file, fs::read_to_string(self.git.root().join(file))?)))
+            .map(|file| {
+                Ok((
+                    file.clone(),
+                    fs::read_to_string(self.git.root().join(file))?,
+                ))
+            })
             .collect()
     }
 
-    fn write_files(&self, plan: &Plan, originals: &HashMap<&'static str, String>) -> Result<()> {
+    fn write_files(&self, plan: &Plan, originals: &HashMap<String, String>) -> Result<()> {
         let root = self.git.root();
         let version = plan.version.to_string();
         for manifest in &self.manifests {
-            let name = manifest.kind.file_name();
+            let name = &manifest.path;
             let text = manifest
                 .kind
                 .set_version(&originals[name], &version)
-                .with_context(|| name)?;
-            fs::write(root.join(name), text).with_context(|| name)?;
+                .with_context(|| name.clone())?;
+            fs::write(root.join(name), text).with_context(|| name.clone())?;
         }
         for manifest in &self.manifests {
             manifest.kind.check_requirements(root)?;
         }
         for manifest in &self.manifests {
-            let lock = manifest.kind.lock_file();
-            if let Some(original) = originals.get(lock) {
-                let text = manifest.kind.update_lock(root, &version, original)?;
-                fs::write(root.join(lock), text).with_context(|| lock)?;
+            if let Some(lock) = &manifest.lock {
+                let text = manifest
+                    .kind
+                    .update_lock(root, &version, &originals[lock])
+                    .with_context(|| lock.clone())?;
+                fs::write(root.join(lock), text).with_context(|| lock.clone())?;
             }
         }
         Ok(())
@@ -214,14 +217,14 @@ impl Release {
         let files: Vec<&str> = plan
             .files
             .iter()
-            .copied()
             .filter(|file| !plan.untracked.contains(file))
+            .map(String::as_str)
             .collect();
         self.git.commit(&files, message)
     }
 
     /// Writes the original files back first: git can recover tracked files, but not untracked ones.
-    fn restore(&self, head: &str, originals: &HashMap<&'static str, String>) -> Result<()> {
+    fn restore(&self, head: &str, originals: &HashMap<String, String>) -> Result<()> {
         let mut errors: Vec<String> = originals
             .iter()
             .filter_map(|(file, text)| {
@@ -264,7 +267,7 @@ fn current_version(manifests: &[Manifest], latest_tag: Option<&Version>) -> Resu
     {
         let list: Vec<String> = manifests
             .iter()
-            .map(|manifest| format!("{} {}", manifest.kind.file_name(), manifest.version))
+            .map(|manifest| format!("{} {}", manifest.path, manifest.version))
             .collect();
         bail!("version files disagree: {}", list.join(", "));
     }
@@ -311,6 +314,13 @@ mod tests {
     fn manifest(kind: Kind, version: &str) -> Manifest {
         Manifest {
             kind,
+            path: match kind {
+                Kind::PackageJson => "package.json",
+                Kind::CargoToml => "Cargo.toml",
+                Kind::Pyproject => "pyproject.toml",
+            }
+            .to_string(),
+            lock: None,
             version: Version::parse(version).unwrap(),
         }
     }
