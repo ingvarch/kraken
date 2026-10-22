@@ -321,6 +321,7 @@ mod tests {
                 Kind::VersionFile => "VERSION",
                 Kind::Deno => "deno.json",
                 Kind::Jsr => "jsr.json",
+                Kind::Gradle => "gradle.properties",
             }
             .to_string(),
             lock: None,

@@ -213,6 +213,28 @@ fn deno_jsonc_patch_release_keeps_comments() {
 }
 
 #[test]
+fn gradle_properties_patch_release() {
+    const GRADLE: &str = "# Gradle\norg.gradle.jvmargs=-Xmx2g\ngroup = com.example\nversion = 1.2.3\nversionCode=7\n";
+    let repo = Repo::new();
+    repo.write("gradle.properties", GRADLE);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("gradle.properties"),
+        GRADLE.replace("version = 1.2.3", "version = 1.2.4")
+    );
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "chore(release): v1.2.4"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
 fn rust_minor_release_updates_cargo_lock() {
     let repo = Repo::new();
     repo.write("Cargo.toml", CARGO_TOML);

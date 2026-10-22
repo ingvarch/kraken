@@ -1,4 +1,5 @@
 mod cargo;
+mod gradle;
 mod package_json;
 mod pyproject;
 mod version_file;
@@ -20,16 +21,18 @@ pub enum Kind {
     VersionFile,
     Deno,
     Jsr,
+    Gradle,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 7] = [
         Kind::PackageJson,
         Kind::CargoToml,
         Kind::Pyproject,
         Kind::VersionFile,
         Kind::Deno,
         Kind::Jsr,
+        Kind::Gradle,
     ];
 
     /// The path of this kind's file in `root`, relative to it, or `None` when there is none.
@@ -41,6 +44,7 @@ impl Kind {
             Kind::VersionFile => &["VERSION"],
             Kind::Deno => &["deno.json", "deno.jsonc"],
             Kind::Jsr => &["jsr.json", "jsr.jsonc"],
+            Kind::Gradle => &["gradle.properties"],
         };
         Ok(names.iter().find_map(|name| existing(root, name)))
     }
@@ -51,7 +55,7 @@ impl Kind {
             Kind::PackageJson => "package-lock.json",
             Kind::CargoToml => "Cargo.lock",
             Kind::Pyproject => "uv.lock",
-            Kind::VersionFile | Kind::Deno | Kind::Jsr => return Ok(None),
+            Kind::VersionFile | Kind::Deno | Kind::Jsr | Kind::Gradle => return Ok(None),
         };
         Ok(existing(root, name))
     }
@@ -62,6 +66,7 @@ impl Kind {
             Kind::CargoToml => cargo::read_version(text),
             Kind::Pyproject => pyproject::read_version(text),
             Kind::VersionFile => version_file::read_version(text),
+            Kind::Gradle => gradle::read_version(text),
         }
     }
 
@@ -71,6 +76,7 @@ impl Kind {
             Kind::CargoToml => cargo::set_version(text, version),
             Kind::Pyproject => pyproject::set_version(text, version),
             Kind::VersionFile => version_file::set_version(text, version),
+            Kind::Gradle => gradle::set_version(text, version),
         }
     }
 
@@ -79,9 +85,12 @@ impl Kind {
     pub fn check_requirements(self, root: &Path) -> Result<()> {
         match self {
             Kind::CargoToml => cargo::check_path_requirements(&cargo::workspace_members(root)?),
-            Kind::PackageJson | Kind::Pyproject | Kind::VersionFile | Kind::Deno | Kind::Jsr => {
-                Ok(())
-            }
+            Kind::PackageJson
+            | Kind::Pyproject
+            | Kind::VersionFile
+            | Kind::Deno
+            | Kind::Jsr
+            | Kind::Gradle => Ok(()),
         }
     }
 
@@ -94,7 +103,7 @@ impl Kind {
                 cargo::set_lock_versions(lock, &members)
             }
             Kind::Pyproject => pyproject::set_uv_lock_version(lock, version),
-            Kind::VersionFile | Kind::Deno | Kind::Jsr => Ok(lock.to_string()),
+            Kind::VersionFile | Kind::Deno | Kind::Jsr | Kind::Gradle => Ok(lock.to_string()),
         }
     }
 }

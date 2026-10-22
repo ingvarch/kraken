@@ -17,6 +17,7 @@ kraken looks for version files in the repository root:
 | `pyproject.toml` | `[project].version` or `[tool.poetry].version` |
 | `deno.json` or `deno.jsonc` | `version` |
 | `jsr.json` or `jsr.jsonc` | `version` |
+| `gradle.properties` | the `version` line |
 | `VERSION` | the whole file: the text without the whitespace around it |
 
 If no file carries a version (a Go module, a `dynamic` Python version, anything else), kraken works with git tags only.
