@@ -322,6 +322,7 @@ mod tests {
                 Kind::Deno => "deno.json",
                 Kind::Jsr => "jsr.json",
                 Kind::Gradle => "gradle.properties",
+                Kind::XcodeGen => "project.yml",
                 Kind::Xcode => "App.xcodeproj/project.pbxproj",
             }
             .to_string(),
