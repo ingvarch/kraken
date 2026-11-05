@@ -5,7 +5,7 @@ use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use kraken::changelog::{self, Setup};
 use kraken::commit::Tally;
-use kraken::release::{Current, Plan, Release, push_target};
+use kraken::release::{Current, Next, Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
 use kraken::version::{Level, suggestion_warning};
 use ratatui::crossterm::style::Stylize;
@@ -50,7 +50,11 @@ enum LevelArg {
 #[derive(Subcommand)]
 enum Command {
     /// Print the project's current version and change nothing
-    Version,
+    Version {
+        /// Print the version the next release gets, with the level taken from the commits
+        #[arg(long)]
+        next: bool,
+    },
     /// Create CHANGELOG.md, which every release then adds a section to
     Changelog,
 }
@@ -67,7 +71,7 @@ fn main() -> ExitCode {
 
 fn run(cli: &Cli) -> Result<()> {
     match cli.command {
-        Some(Command::Version) => return print_version(),
+        Some(Command::Version { next }) => return print_version(next),
         Some(Command::Changelog) => return create_changelog(),
         None => {}
     }
@@ -124,12 +128,29 @@ fn level_line(level: Level, current: &Version, tally: &Tally) -> String {
     }
 }
 
-fn print_version() -> Result<()> {
+fn print_version(next: bool) -> Result<()> {
+    if next {
+        return print_next_version();
+    }
     let current = Current::of(&std::env::current_dir()?)?;
     if let Some(warning) = current.warning() {
         eprintln!("warning: {warning}");
     }
     println!("{}", current.version);
+    Ok(())
+}
+
+fn print_next_version() -> Result<()> {
+    let next = Next::of(&std::env::current_dir()?)?;
+    if let Some(warning) = next.warning() {
+        eprintln!("warning: {warning}");
+    }
+    eprintln!(
+        "Changes: {}",
+        next.commits.summary(next.latest_tag.as_deref())
+    );
+    eprintln!("{}", level_line(next.level, &next.current, &next.commits));
+    println!("{}", next.version);
     Ok(())
 }
 
