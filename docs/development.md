@@ -4,7 +4,7 @@ Local setup, checks and project layout. To publish a new version of kraken, see 
 
 ## Prerequisites
 
-- Rust stable with edition 2024 (1.85 or newer).
+- Rust stable with edition 2024 (1.88 or newer).
 - `git` on `PATH`: the tests create temporary git repositories.
 - [cargo-about](https://github.com/EmbarkStudios/cargo-about) for the license check.
 - For a release snapshot: GoReleaser (the version is in `.tool-versions`), Zig 0.15.1 and `cargo-zigbuild`.
@@ -17,10 +17,11 @@ The `ci` workflow runs these on every push to `main` and on every pull request:
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo about generate --fail --output-file /dev/null about.hbs
+cargo publish --dry-run --locked
 cargo test --locked
 ```
 
-The license check fails on a crate whose license `about.toml` does not accept. The tests run on Linux and macOS.
+The license check fails on a crate whose license `about.toml` does not accept. The publish dry run packs the crate and builds the packed files, so a file the build needs that is missing from `include` in `Cargo.toml` fails it. It does not check the name on crates.io. The tests run on Linux and macOS.
 
 CI also builds a release snapshot, to find a broken release before a tag does:
 

@@ -8,7 +8,16 @@ How to install kraken and run it, by hand or from a script. What it checks and c
 brew install ingvarch/tap/kraken
 ```
 
-Or download an archive for your platform from the [releases](https://github.com/ingvarch/kraken/releases), or build from source with `cargo install --path .`. kraken works on macOS and Linux.
+Or install it with cargo:
+
+```
+cargo install --locked kraken-release
+cargo binstall kraken-release
+```
+
+`cargo install` builds from source. It needs Rust 1.88 or newer, and `--locked` uses the `Cargo.lock` that kraken is tested with. `cargo binstall` downloads the release binary from GitHub (signed and notarized on macOS). It is a separate tool: install it with `cargo install cargo-binstall`. Both install the `kraken` command. The crate name differs because `kraken` on crates.io belongs to another project.
+
+You can also download an archive for your platform from the [releases](https://github.com/ingvarch/kraken/releases), or build a checkout with `cargo install --path .`. kraken works on macOS and Linux.
 
 ## Commands
 

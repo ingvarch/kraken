@@ -12,6 +12,46 @@ Release kraken with kraken: `kraken` in this repository bumps `Cargo.toml`, tags
 4. Publishes the GitHub release.
 5. Updates the cask in [ingvarch/homebrew-tap](https://github.com/ingvarch/homebrew-tap). The cask installs the bash, zsh and fish completions.
 
+## crates.io
+
+The crate is `kraken-release` because the name `kraken` on crates.io belongs to another project. The binary and the command are still `kraken`. `cargo binstall kraken-release` reads `[package.metadata.binstall]` in `Cargo.toml` and downloads the matching archive from the GitHub release. The metadata turns off the third-party builds binstall would otherwise fall back to, so a target without an archive builds from source.
+
+Trusted publishing works only for a crate that already exists, so publish the first version by hand:
+
+1. Release the version with kraken as usual.
+2. On a clean checkout of its tag, create a crates.io token with the scope `publish-new` for `kraken-release` and a short expiry. The account needs a verified email address.
+3. Run `cargo publish --locked`, then delete the token.
+4. On crates.io, open kraken-release, Settings, Trusted Publishing. Add GitHub with owner `ingvarch`, repository `kraken` and workflow `release.yml`. You can also turn on the setting that allows trusted publishing only.
+5. Add a `crate` job to `release.yml`:
+
+   ```yaml
+     crate:
+       name: crates.io
+       needs: release
+       runs-on: ubuntu-26.04
+       permissions:
+         contents: read
+         id-token: write
+       steps:
+         - uses: actions/checkout@v7
+
+         - uses: dtolnay/rust-toolchain@stable
+
+         - uses: rust-lang/crates-io-auth-action@v1
+           id: auth
+
+         - name: publish
+           run: cargo publish --locked
+           env:
+             CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+   ```
+
+   The action trades GitHub's OIDC token for a crates.io token that lives 30 minutes, so the repository keeps no crates.io secret. A crates.io version cannot be deleted, which is why the job runs after the GitHub release. If it fails, rerun it alone from the Actions page.
+
+Until step 5 is done, the release workflow does not publish the crate. From the next tag after that, it publishes each version.
+
+`kraken undo` cannot take back a published version. To hide a bad one from new installs, run `cargo yank --version X.Y.Z kraken-release`. A pre-release such as `0.5.0-rc.1` is published like any other version, and `cargo install` picks it only with `--version`.
+
 ## Secrets
 
 The `release` workflow reads these repository secrets:
