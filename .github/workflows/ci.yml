@@ -128,6 +128,49 @@ jobs:
           bash -n completions/kraken.bash || status=1
           exit $status
 
+      # The runner is x86_64, so the arm64 packages are only built.
+      - name: deb package installs
+        run: |
+          deb=$(ls dist/kraken-release_*_amd64.deb)
+          sudo apt-get install -y "./$deb"
+          kraken --version
+          dpkg-deb --field "$deb" Depends | grep -x git
+          dpkg-deb --field "$deb" Conflicts | grep -x kraken
+          for path in \
+            /usr/bin/kraken \
+            /usr/share/doc/kraken-release/README.md \
+            /usr/share/doc/kraken-release/LICENSE \
+            /usr/share/doc/kraken-release/THIRD_PARTY_NOTICES \
+            /usr/share/doc/kraken-release/docs/usage.md \
+            /usr/share/bash-completion/completions/kraken \
+            /usr/share/fish/vendor_completions.d/kraken.fish \
+            /usr/share/zsh/vendor-completions/_kraken; do
+            dpkg -L kraken-release | grep -x "$path"
+          done
+          sudo apt-get remove -y kraken-release
+          test ! -e /usr/share/doc/kraken-release
+
+      - name: rpm package installs
+        run: |
+          docker run --rm -v "$PWD/dist:/dist:ro" fedora:latest sh -ec '
+            dnf install -y /dist/kraken-release-*.x86_64.rpm
+            kraken --version
+            rpm -q --requires kraken-release | grep -x git-core
+            if rpm -q --requires kraken-release | grep -x git; then exit 1; fi
+            for path in \
+              /usr/bin/kraken \
+              /usr/share/doc/kraken-release/README.md \
+              /usr/share/doc/kraken-release/LICENSE \
+              /usr/share/doc/kraken-release/THIRD_PARTY_NOTICES \
+              /usr/share/doc/kraken-release/docs/usage.md \
+              /usr/share/bash-completion/completions/kraken \
+              /usr/share/fish/vendor_completions.d/kraken.fish \
+              /usr/share/zsh/site-functions/_kraken; do
+              rpm -ql kraken-release | grep -x "$path"
+            done
+            dnf remove -y kraken-release
+            test ! -e /usr/share/doc/kraken-release'
+
       - uses: actions/setup-go@v7
         with:
           go-version: stable

@@ -56,6 +56,56 @@ archives:
       - docs/*.md
       - completions/*
 
+# The package is kraken-release because Debian has an unrelated package named
+# kraken that also installs /usr/bin/kraken. The command stays kraken.
+# Debian's zsh reads vendor-completions, Fedora's and openSUSE's read
+# site-functions.
+nfpms:
+  - package_name: kraken-release
+    # A pre-release version has a ~, which GitHub turns into . in asset names.
+    # The checksums file must list the names users download.
+    file_name_template: '{{ replace .ConventionalFileName "~" "." }}'
+    vendor: Igor Churmeev
+    homepage: https://github.com/ingvarch/kraken
+    maintainer: Igor Churmeev <ingvarch@gmail.com>
+    description: Bump the version, tag the release and push it
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    dependencies:
+      - git
+    overrides:
+      deb:
+        conflicts:
+          - kraken
+      rpm:
+        dependencies:
+          - git-core
+    contents:
+      - dst: /usr/share/doc/kraken-release
+        type: dir
+      - dst: /usr/share/doc/kraken-release/docs
+        type: dir
+      - src: README.md
+        dst: /usr/share/doc/kraken-release/README.md
+      - src: LICENSE
+        dst: /usr/share/doc/kraken-release/LICENSE
+      - src: THIRD_PARTY_NOTICES
+        dst: /usr/share/doc/kraken-release/THIRD_PARTY_NOTICES
+      - src: docs/*.md
+        dst: /usr/share/doc/kraken-release/docs/
+      - src: completions/kraken.bash
+        dst: /usr/share/bash-completion/completions/kraken
+      - src: completions/kraken.fish
+        dst: /usr/share/fish/vendor_completions.d/kraken.fish
+      - src: completions/_kraken
+        dst: /usr/share/zsh/vendor-completions/_kraken
+        packager: deb
+      - src: completions/_kraken
+        dst: /usr/share/zsh/site-functions/_kraken
+        packager: rpm
+
 changelog:
   use: github-native
 

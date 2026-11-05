@@ -17,6 +17,17 @@ cargo binstall kraken-release
 
 `cargo install` builds from source. It needs Rust 1.88 or newer, and `--locked` uses the `Cargo.lock` that kraken is tested with. `cargo binstall` downloads the release binary from GitHub (signed and notarized on macOS). It is a separate tool: install it with `cargo install cargo-binstall`. Both install the `kraken` command. The crate name differs because `kraken` on crates.io belongs to another project.
 
+On Linux, download a package from the [releases](https://github.com/ingvarch/kraken/releases):
+
+```
+sudo apt install ./kraken-release_<version>_amd64.deb
+sudo dnf install ./kraken-release-<version>-1.x86_64.rpm
+```
+
+The first line is for Debian and Ubuntu, the second for Fedora, RHEL and openSUSE (on openSUSE use `sudo zypper install --allow-unsigned-rpm ./kraken-release-<version>-1.x86_64.rpm`, because the package is not signed). For arm64 machines take `_arm64.deb` or `.aarch64.rpm`. The packages install git when it is missing, put `kraken` in `/usr/bin`, add the bash, zsh and fish completions, and put the README and the guides in `/usr/share/doc/kraken-release/`. To upgrade, install the newer file. Nothing updates by itself. The package is `kraken-release` because Debian has an unrelated `kraken` package, and the .deb conflicts with it. The command is `kraken`.
+
+The Linux binaries need glibc 2.31 or newer: Debian 11, Ubuntu 20.04, Fedora 32, RHEL 9 and later. On older systems the package installs and kraken then fails to start.
+
 You can also download an archive for your platform from the [releases](https://github.com/ingvarch/kraken/releases), or build a checkout with `cargo install --path .`. kraken works on macOS and Linux.
 
 ## Commands

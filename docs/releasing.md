@@ -8,9 +8,10 @@ Release kraken with kraken: `kraken` in this repository bumps `Cargo.toml`, tags
 
 1. Stops if the tag and the version in `Cargo.toml` differ.
 2. Builds the archives with GoReleaser for Linux and macOS, x86_64 and aarch64, and puts `LICENSE`, `README.md`, `THIRD_PARTY_NOTICES`, the guides from `docs/` and the shell completions in `completions/` in each. GoReleaser makes the completion scripts with `kraken completions` from a host build of the commit it releases. The `release snapshot` job in CI checks that every archive has each guide the README links to and the three completion scripts, and that the cask lists them.
-3. Signs and notarizes the macOS binaries.
-4. Publishes the GitHub release.
-5. Updates the cask in [ingvarch/homebrew-tap](https://github.com/ingvarch/homebrew-tap). The cask installs the bash, zsh and fish completions.
+3. Builds `.deb` and `.rpm` packages for Linux x86_64 and aarch64 with nfpm. The package is named `kraken-release`, files are `kraken-release_X.Y.Z_amd64.deb` and `kraken-release-X.Y.Z-1.x86_64.rpm`. Each has the binary in `/usr/bin`, the completions, and the README, license files and guides in `/usr/share/doc/kraken-release/`. The .deb depends on `git` and conflicts with Debian's `kraken`, the .rpm depends on `git-core`. A pre-release tag such as `v0.5.0-rc.1` becomes `0.5.0~rc.1`, which sorts before `0.5.0`. The file names have `.` in place of `~`, because GitHub changes `~` to `.` in asset names. The `release snapshot` job in CI installs the amd64 .deb on the runner and the x86_64 .rpm in a Fedora container, and runs `kraken --version` after each.
+4. Signs and notarizes the macOS binaries.
+5. Publishes the GitHub release with the archives, the packages and the checksums file.
+6. Updates the cask in [ingvarch/homebrew-tap](https://github.com/ingvarch/homebrew-tap). The cask installs the bash, zsh and fish completions.
 
 ## crates.io
 
