@@ -152,9 +152,42 @@ kraken commits `chore(release): v1.2.3` and creates an annotated tag. The tag ke
 
 If there is an `origin` remote, kraken asks whether to push the branch and the tag. The branch goes to its upstream branch on origin, or to a branch with the same name. Both go in one atomic push.
 
+## GitHub release
+
+With `--github-release`, kraken makes a GitHub release for the new tag right after a successful push. It does this only when you ask. Without the flag it never runs gh.
+
+kraken runs gh for this and adds no HTTP client of its own. gh already handles the login, the keyring, `GH_TOKEN`, token refresh and GitHub Enterprise hosts.
+
+The release goes to the repository that origin pushes to. kraken reads the URL the same way as for the changelog links, `git remote get-url --push origin`, and the path must be exactly `OWNER/REPO`. For an SSH URL it runs `ssh -G`, so `git@github-work:o/r.git` with `HostName github.com` goes to `github.com`, and `ssh.github.com` counts as `github.com`. A user name or password in the URL never shows in the output. kraken passes `--repo` to gh itself. Left alone, gh may pick a remote named `upstream` or the one set by `gh repo set-default`, which in a fork is not the repository kraken pushed to. With `--repo`, other remotes, `GH_REPO` and `gh repo set-default` change nothing.
+
+Before anything changes kraken refuses when there is no origin, when the push URL names no `HOST/OWNER/REPO`, when gh is not installed and when this call fails:
+
+```
+gh api --hostname github.com repos/o/r --silent
+```
+
+It succeeds when gh has a token for the host and the token can see the repository. `--dry-run` makes the call too. kraken does not use `gh auth status` or `gh auth token`.
+
+After the push kraken runs:
+
+```
+gh release create v1.4.0 --repo github.com/o/r --verify-tag --title v1.4.0 --notes-file /home/me/app/.git/KRAKEN_RELEASE_NOTES.md
+```
+
+- The title is the tag as it is, `v1.4.0` or `1.4.0`.
+- `--verify-tag` makes gh stop when the tag is missing on GitHub, so gh never makes a tag of its own.
+- The notes are the changelog section without its `## [X.Y.Z] - date` heading. Without a `CHANGELOG.md` that has the kraken line, or with `--no-changelog`, kraken builds the same section from the same commits and leaves the file alone. A section without entries gives a release without notes. GitHub takes at most 125000 characters, and kraken refuses longer notes before anything changes.
+- A pre-release goes out with `--prerelease`. Its notes list the commits since the latest tag of any kind, because a pre-release adds no changelog section.
+- A release below the highest final release tag, such as 1.9.1 on a maintenance branch when `v2.0.0` exists, goes out with `--latest=false`, so GitHub keeps the newer release as Latest.
+- kraken writes the notes to `KRAKEN_RELEASE_NOTES.md` in the git directory right before the call and deletes the file when gh succeeds. The path is absolute, and each linked worktree gets its own file in its own git directory.
+
+With the push turned off in the panel there is no GitHub release, and kraken says so. The panel shows where the release goes and its notes, and `--dry-run` shows the same.
+
+When gh fails after the push, the commit and the tag are on origin, and kraken rolls nothing back. It exits with 1, keeps the notes file and prints the command to try again. Running that command twice is safe, because GitHub refuses a second published release for the same tag. After a timeout the release may exist already, and the retry then fails with GitHub's error that says so.
+
 ## Rollback
 
-If anything fails before the tag exists, kraken moves HEAD back and puts the files back as they were, `CHANGELOG.md` included. For a release that went through, use [`kraken undo`](#undo).
+If anything fails before the tag exists, kraken moves HEAD back and puts the files back as they were, `CHANGELOG.md` included. The GitHub release comes after the push, so a failed one rolls nothing back. For a release that went through, use [`kraken undo`](#undo).
 
 ## Undo
 

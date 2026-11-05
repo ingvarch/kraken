@@ -8,6 +8,7 @@ use semver::Version;
 use crate::changelog::{self, Changes, Links, Section};
 use crate::commit::Tally;
 use crate::git::Git;
+use crate::github::{self, GitHubRelease};
 use crate::manifest::{self, Manifest};
 use crate::origin::{self, Pages, Repo};
 use crate::version::{
@@ -15,6 +16,15 @@ use crate::version::{
 };
 
 pub(crate) const ORIGIN: &str = "origin";
+
+const NOTES_FILE: &str = "KRAKEN_RELEASE_NOTES.md";
+
+/// What the command line asks of a release.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub changelog: bool,
+    pub github_release: bool,
+}
 
 /// What the repository looks like before a release.
 pub struct Release {
@@ -33,9 +43,18 @@ pub struct Release {
     pub remote_branch: Option<String>,
     /// The commits since the latest final tag.
     changes: Changes,
-    /// Release date; set only when the release adds a section to CHANGELOG.md.
+    /// The commits since the latest tag of any kind, which a GitHub pre-release lists;
+    /// `None` when they are the same as `changes`.
+    changes_since_latest: Option<Changes>,
+    /// The release adds a section to CHANGELOG.md.
+    writes_changelog: bool,
+    github_release: bool,
+    /// The highest final release tag among all local tags.
+    highest: Option<Version>,
+    /// Release date; set when the release adds a section to CHANGELOG.md or makes a GitHub release.
     date: Option<String>,
-    /// The repository origin pushes to; set only when the release adds a section to CHANGELOG.md.
+    /// The repository origin pushes to; set when the release adds a section to CHANGELOG.md
+    /// or makes a GitHub release.
     origin: Option<Repo>,
 }
 
@@ -148,10 +167,12 @@ pub struct Plan {
     pub other_spellings: Vec<(String, Vec<String>)>,
     /// The final version that gets the changelog section a pre-release leaves out.
     pub changelog_waits: Option<Version>,
+    /// The GitHub release made after the push; `None` without `--github-release`.
+    pub github: Option<GitHubRelease>,
 }
 
 impl Release {
-    pub fn prepare(dir: &Path, with_changelog: bool) -> Result<Release> {
+    pub fn prepare(dir: &Path, options: Options) -> Result<Release> {
         let git = Git::discover(dir)?;
         let head = git.head()?;
         let branch = git.branch()?;
@@ -168,17 +189,29 @@ impl Release {
             git.upstream(&branch, ORIGIN)
                 .unwrap_or_else(|| branch.clone())
         });
-        let writes_changelog = with_changelog && changelog::is_on(git.root())?;
-        let date = writes_changelog
+        let writes_changelog = options.changelog && changelog::is_on(git.root())?;
+        let date = (writes_changelog || options.github_release)
             .then(|| changelog::ident_date(&git.committer_ident()?))
             .transpose()?;
         let origin = match &remote_branch {
+            Some(_) if options.github_release => {
+                Some(github::repo(&git.push_url(ORIGIN)?, git.root())?)
+            }
             Some(_) if writes_changelog => origin::resolve(&git.push_url(ORIGIN)?, git.root()),
+            None if options.github_release => {
+                bail!("--github-release needs an origin remote on GitHub")
+            }
             _ => None,
         };
         let changes = Changes {
             commits: git.commits_since(final_tag.as_deref())?,
         };
+        let latest_tag = latest.as_ref().map(|(tag, _)| tag.as_str());
+        let changes_since_latest = (options.github_release && latest_tag != final_tag.as_deref())
+            .then(|| git.commits_since(latest_tag))
+            .transpose()?
+            .map(|commits| Changes { commits });
+        let highest = latest_final_tag(&git.tags()?).map(|(_, version)| version);
         Ok(Release {
             git,
             manifests,
@@ -190,6 +223,10 @@ impl Release {
             branch,
             remote_branch,
             changes,
+            changes_since_latest,
+            writes_changelog,
+            github_release: options.github_release,
+            highest,
             date,
             origin,
         })
@@ -283,7 +320,7 @@ impl Release {
         let section = self
             .date
             .clone()
-            .filter(|_| is_final)
+            .filter(|_| self.writes_changelog && is_final)
             .map(|date| self.changes.section(&version, date));
         let links = match (&section, self.origin.as_ref().and_then(Pages::of)) {
             (Some(_), Some(pages)) => {
@@ -293,11 +330,12 @@ impl Release {
             }
             _ => None,
         };
-        let changelog_waits = (self.date.is_some() && !is_final)
+        let changelog_waits = (self.writes_changelog && !is_final)
             .then(|| Version::new(version.major, version.minor, version.patch));
         if section.is_some() {
             files.push(changelog::FILE.to_string());
         }
+        let github = self.github_release(&version, &tag, section.as_ref())?;
         let file_refs: Vec<&str> = files.iter().map(String::as_str).collect();
         let tracked = self.git.tracked(&file_refs)?;
         let untracked: Vec<String> = files
@@ -328,7 +366,80 @@ impl Release {
             links,
             other_spellings: spellings,
             changelog_waits,
+            github,
         })
+    }
+
+    /// The GitHub release for `tag`; its notes are the changelog `section`, or the same section
+    /// built from the commits when CHANGELOG.md gets none.
+    fn github_release(
+        &self,
+        version: &Version,
+        tag: &str,
+        section: Option<&Section>,
+    ) -> Result<Option<GitHubRelease>> {
+        let (Some(repo), true, Some(date)) = (&self.origin, self.github_release, &self.date) else {
+            return Ok(None);
+        };
+        let is_final = version.pre.is_empty();
+        let notes = match section {
+            Some(section) => section.clone(),
+            None => {
+                let changes = match &self.changes_since_latest {
+                    Some(since_latest) if !is_final => since_latest,
+                    _ => &self.changes,
+                };
+                changes.section(version, date.clone())
+            }
+        };
+        github::check_notes_length(&notes.notes())?;
+        let latest = !is_final
+            || self
+                .highest
+                .as_ref()
+                .is_none_or(|highest| version > highest);
+        Ok(Some(GitHubRelease {
+            repo: repo.clone(),
+            tag: tag.to_string(),
+            notes,
+            latest,
+            prerelease: !is_final,
+        }))
+    }
+
+    /// The repository the GitHub release goes to; `None` without `--github-release`.
+    pub fn github_repo(&self) -> Option<&Repo> {
+        self.origin.as_ref().filter(|_| self.github_release)
+    }
+
+    /// Fails unless gh can reach the repository of the GitHub release.
+    pub fn check_github(&self) -> Result<()> {
+        match self.github_repo() {
+            Some(repo) => github::check(repo, self.git.root()),
+            None => Ok(()),
+        }
+    }
+
+    /// Creates the GitHub release for the tag that was pushed. On failure the error also
+    /// carries the command to try again; the notes file stays for it.
+    pub fn create_github_release(&self, plan: &Plan) -> Result<String> {
+        let release = plan
+            .github
+            .as_ref()
+            .context("the plan has no GitHub release")?;
+        let notes_file = self.git.git_path(NOTES_FILE)?;
+        fs::write(&notes_file, release.notes.notes()).context(NOTES_FILE)?;
+        match github::create(release, &notes_file, self.git.root()) {
+            Ok(url) => {
+                fs::remove_file(&notes_file).context(NOTES_FILE)?;
+                Ok(url)
+            }
+            Err(err) => bail!(
+                "could not create the GitHub release: {err:#}\nThe tag {} is on origin, so nothing was rolled back. To try again, run:\n\n  {}",
+                release.tag,
+                release.retry_command(&notes_file)
+            ),
+        }
     }
 
     /// Writes the version files, commits and tags. On failure puts HEAD and the files back.

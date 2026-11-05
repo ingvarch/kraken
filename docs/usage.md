@@ -13,7 +13,7 @@ Or download an archive for your platform from the [releases](https://github.com/
 ## Commands
 
 ```
-kraken [patch|minor|major|auto] [--pre alpha|beta|rc] [--yes] [--dry-run] [--no-changelog]
+kraken [patch|minor|major|auto] [--pre alpha|beta|rc] [--yes] [--dry-run] [--no-changelog] [--github-release]
 kraken version [--next [--pre alpha|beta|rc]]
 kraken changelog
 kraken undo [--yes] [--dry-run]
@@ -28,6 +28,7 @@ kraken undo [--yes] [--dry-run]
 - `kraken minor --yes` opens no panel, asks nothing and pushes if `origin` exists. Use this in scripts.
 - `kraken minor --dry-run` shows what would change, with the whole changelog section and its links, and changes nothing.
 - `kraken minor --no-changelog` releases without adding a section to `CHANGELOG.md`. It works with the panel, `--yes` and `--dry-run`.
+- `kraken minor --github-release` also creates a GitHub release for the tag after the push, with gh. It works with the panel, `--yes` and `--dry-run`. See [GitHub release](how-it-works.md#github-release), and [Without a terminal](#without-a-terminal) for the token.
 - `kraken version` prints the version kraken would release from, for example `1.4.2`, and changes nothing. A pre-release prints in the semver spelling, such as `1.4.0-rc.1`, in a Python project too. It needs no clean tree or branch and does not touch the network. In a shallow clone it needs version files, and it cannot compare them with tags the clone did not fetch; with tags alone run `git fetch --unshallow --tags` first. A warning about a differing tag goes to stderr, so `$(kraken version)` holds only the version.
 - `kraken version --next` prints the version the next release gets, such as `1.5.0`, with the level taken from the commits, and changes nothing. With `--pre rc` it prints the pre-release that `kraken auto --pre rc` would make, such as `1.5.0-rc.1`. The changes and the level go to stderr, so `$(kraken version --next)` holds only the version. It fails with nothing to release, an existing tag or a shallow clone; in GitHub Actions use `fetch-depth: 0`.
 - `kraken changelog` creates `CHANGELOG.md` in the repository root and changes nothing else. In a repository with release tags, the new file has a section for each final release tag that HEAD contains, newest first, with a link for each one when origin is on a known host. It reads the tags in your clone, so run `git fetch --tags` first. A shallow clone is refused. Commit the file, and every release adds a section to it, see [how-it-works.md](how-it-works.md#changelog). An existing file stays as it is: if it has the kraken line, `kraken changelog` says so; if not, it fails and prints the line to add.
@@ -36,3 +37,5 @@ kraken undo [--yes] [--dry-run]
 ## Without a terminal
 
 In CI or a pipe there is no panel, so a release needs a level or `auto`, and `--yes`. In GitHub Actions, check out with `fetch-depth: 0`: kraken refuses a shallow clone.
+
+With `--github-release`, gh reads its token from `GH_TOKEN`. In GitHub Actions set `GH_TOKEN: ${{ github.token }}` and give the job `contents: write`. A release made with that token does not start workflows that run `on: release`.

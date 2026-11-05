@@ -16,6 +16,7 @@ kraken releases a project in one command: it bumps the version, commits, tags an
 - Suggests patch, minor or major from the conventional commits since the latest final release tag and starts the panel on it; `kraken auto --yes` takes it in scripts
 - Refuses a dirty tree, a shallow clone, tags on origin you have not fetched and a version that is not above the latest tag
 - Adds a section to `CHANGELOG.md` from the commits since the latest final release tag, with a compare link when origin is on GitHub, GitLab or Codeberg. `kraken changelog` creates the file with a section for every past release and the line that turns this on; an existing changelog needs that line added
+- With `--github-release`, creates a GitHub release with gh after the push, with the changelog section as notes
 - Commits, creates an annotated tag and pushes the branch and the tag in one atomic push
 - Puts HEAD and the files back if anything fails before the tag
 - `kraken undo` removes a release that is not pushed yet
@@ -62,7 +63,7 @@ cargo run -- patch --dry-run
 
 - [Usage](docs/usage.md): install, commands and flags, the panel, scripts and CI
 - [How it works](docs/how-it-works.md): checks, version files, lock files, changelog, commit, tag, push, rollback, undo
-- [Limits](docs/limits.md): one version per repository, pre-release labels, files that take numbers only, no GitHub releases
+- [Limits](docs/limits.md): one version per repository, pre-release labels, files that take numbers only, the GitHub release
 - [Development](docs/development.md): prerequisites, checks, project structure
 - [Releasing kraken](docs/releasing.md): the release workflow and its secrets
 

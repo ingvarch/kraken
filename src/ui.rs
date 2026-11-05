@@ -323,13 +323,34 @@ impl App {
             }
             None => lines.extend(row("Push", "no origin remote", width, Style::new().dim())),
         }
+        if let Some(github) = &plan.github {
+            lines.extend(if self.push {
+                row("GitHub", &github.describe(), width, Style::new())
+            } else {
+                row(
+                    "GitHub",
+                    "no release without the push",
+                    width,
+                    Style::new().dim(),
+                )
+            });
+        }
         for file in &plan.untracked {
             let note = format!("{file} is not tracked by git, so it stays out of the commit.");
             lines.extend(dim_lines(&note, width));
         }
-        if let Some(section) = &plan.changelog {
+        let notes = plan.github.as_ref().filter(|_| self.push);
+        let block = match (&plan.changelog, notes) {
+            (Some(section), Some(_)) => {
+                Some((section, "Changelog and release notes", CHANGELOG_EMPTY))
+            }
+            (Some(section), None) => Some((section, "Changelog", CHANGELOG_EMPTY)),
+            (None, Some(github)) => Some((&github.notes, "Release notes", NOTES_EMPTY)),
+            (None, None) => None,
+        };
+        if let Some((section, title, empty)) = block {
             let room = room.saturating_sub(lines.len());
-            lines.extend(changelog_lines(section, width, room));
+            lines.extend(changelog_lines(section, title, empty, width, room));
         }
         if self.facts.remote_branch.is_some() {
             hints(&[
@@ -358,8 +379,17 @@ fn dim_lines(text: &str, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The changelog section in at most `room` lines, or nothing when it has no room.
-fn changelog_lines(section: &Section, width: usize, room: usize) -> Vec<Line<'static>> {
+const CHANGELOG_EMPTY: &str = "Only the version heading, no entries";
+const NOTES_EMPTY: &str = "No entries, so the release has no notes";
+
+/// The entries of `section` under `title` in at most `room` lines, or nothing when it has no room.
+fn changelog_lines(
+    section: &Section,
+    title: &str,
+    empty: &str,
+    width: usize,
+    room: usize,
+) -> Vec<Line<'static>> {
     // A blank line and the heading come first.
     let Some(room) = room.checked_sub(2).filter(|&room| room > 0) else {
         return Vec::new();
@@ -376,14 +406,14 @@ fn changelog_lines(section: &Section, width: usize, room: usize) -> Vec<Line<'st
         }
     }
     if body.is_empty() {
-        body.push(Line::from("Only the version heading, no entries").dim());
+        body.push(Line::from(empty.to_string()).dim());
     }
     if body.len() > room {
         let cut = body.len() - (room - 1);
         body.truncate(room - 1);
         body.push(Line::from(format!("… {cut} more lines")).dim());
     }
-    let mut lines = vec![Line::default(), Line::from("Changelog").bold()];
+    let mut lines = vec![Line::default(), Line::from(title.to_string()).bold()];
     lines.extend(body);
     lines
 }
@@ -540,6 +570,8 @@ mod tests {
     use ratatui::style::Color;
 
     use crate::changelog::{Entry, Group};
+    use crate::github::GitHubRelease;
+    use crate::origin::Repo;
 
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap()
@@ -583,6 +615,7 @@ mod tests {
             links: None,
             other_spellings: vec![],
             changelog_waits: None,
+            github: None,
         }
     }
 
@@ -983,6 +1016,122 @@ mod tests {
         choices
     }
 
+    fn github_release(mut choices: Vec<Choice>, groups: Vec<(Group, Vec<Entry>)>) -> Vec<Choice> {
+        for choice in &mut choices {
+            if let Ok(plan) = &mut choice.plan {
+                plan.github = Some(GitHubRelease {
+                    repo: Repo {
+                        host: "github.com".to_string(),
+                        path: "demo/app".to_string(),
+                    },
+                    tag: plan.tag.clone(),
+                    notes: Section {
+                        version: plan.version.clone(),
+                        date: "2026-11-04".to_string(),
+                        groups: groups.clone(),
+                    },
+                    latest: true,
+                    prerelease: false,
+                });
+            }
+        }
+        choices
+    }
+
+    fn added() -> Vec<(Group, Vec<Entry>)> {
+        vec![(
+            Group::Added,
+            vec![entry(Some("cli"), "add a command"), entry(None, "read it")],
+        )]
+    }
+
+    fn github_app(groups: Vec<(Group, Vec<Entry>)>) -> App {
+        let mut app = App::new(facts(), github_release(choices(), groups), None);
+        press(&mut app, KeyCode::Enter);
+        app
+    }
+
+    #[test]
+    fn confirmation_shows_the_github_release() {
+        let app = github_app(added());
+
+        assert_shows(&app, "GitHub    release v1.2.4 on github.com/demo/app");
+    }
+
+    #[test]
+    fn github_release_needs_the_push() {
+        let mut app = github_app(added());
+        press(&mut app, KeyCode::Char(' '));
+
+        assert_shows(&app, "GitHub    no release without the push");
+        assert_hides(&app, "release v1.2.4 on");
+        press(&mut app, KeyCode::Char(' '));
+        assert_shows(&app, "GitHub    release v1.2.4 on github.com/demo/app");
+    }
+
+    #[test]
+    fn no_github_row_without_a_github_release() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+
+        assert_hides(&app, "GitHub");
+    }
+
+    #[test]
+    fn shows_the_release_notes_without_a_changelog() {
+        let app = github_app(added());
+
+        assert_shows(&app, "Release notes");
+        assert_hides(&app, "Changelog");
+        assert_shows(&app, "Added     cli: add a command");
+    }
+
+    #[test]
+    fn names_the_release_notes_in_the_changelog_heading() {
+        let mut choices = github_release(with_changelog(added()), added());
+        let mut app = App::new(facts(), std::mem::take(&mut choices), None);
+        press(&mut app, KeyCode::Enter);
+
+        assert_shows(&app, "Changelog and release notes");
+        press(&mut app, KeyCode::Char(' '));
+        assert_hides(&app, "release notes");
+        assert_shows(&app, "Changelog");
+        assert_shows(&app, "Added     cli: add a command");
+    }
+
+    #[test]
+    fn release_notes_without_entries_say_so() {
+        let app = github_app(vec![]);
+
+        assert_shows(&app, "Release notes");
+        assert_shows(&app, "No entries, so the release has no notes");
+    }
+
+    #[test]
+    fn no_notes_block_without_the_push_and_a_changelog() {
+        let mut app = github_app(added());
+        press(&mut app, KeyCode::Char(' '));
+
+        assert_hides(&app, "Release notes");
+        assert_hides(&app, "cli: add a command");
+    }
+
+    #[test]
+    fn confirmation_with_a_github_release_and_a_long_warning_fits_a_standard_terminal() {
+        let mut facts = facts();
+        facts.warnings = vec![git_rejection()];
+        let mut choices = github_release(choices(), added());
+        if let Ok(plan) = &mut choices[0].plan {
+            plan.untracked = vec!["Cargo.lock".to_string()];
+        }
+        let mut app = App::new(facts, choices, None);
+        press(&mut app, KeyCode::Enter);
+
+        assert_hides(&app, "too small");
+        assert_shows(&app, "enter release");
+        assert_shows(&app, "GitHub    release v1.2.4");
+    }
+
     fn long_changelog() -> Vec<Choice> {
         let entries = (1..=40)
             .map(|n| entry(None, &format!("change {n}")))
@@ -1050,7 +1199,7 @@ mod tests {
             groups: vec![(Group::Added, vec![entry(None, "a"), entry(None, "b")])],
         };
         let text = |room| -> Vec<String> {
-            changelog_lines(&section, 50, room)
+            changelog_lines(&section, "Changelog", CHANGELOG_EMPTY, 50, room)
                 .iter()
                 .map(Line::to_string)
                 .collect()

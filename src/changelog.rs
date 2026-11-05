@@ -76,9 +76,21 @@ impl Section {
     }
 
     pub fn markdown(&self) -> String {
-        let mut text = format!("## [{}] - {}\n", self.version, self.date);
-        for (group, entries) in &self.groups {
-            text.push_str(&format!("\n### {}\n\n", group.title()));
+        let heading = format!("## [{}] - {}\n", self.version, self.date);
+        match self.notes() {
+            notes if notes.is_empty() => heading,
+            notes => format!("{heading}\n{notes}"),
+        }
+    }
+
+    /// The groups without the version heading; empty when there are no entries.
+    pub fn notes(&self) -> String {
+        let mut text = String::new();
+        for (index, (group, entries)) in self.groups.iter().enumerate() {
+            if index > 0 {
+                text.push('\n');
+            }
+            text.push_str(&format!("### {}\n\n", group.title()));
             for entry in entries {
                 match &entry.scope {
                     Some(scope) => text.push_str(&format!("- **{scope}**: {}\n", entry.text)),
@@ -571,6 +583,43 @@ mod tests {
              \n\
              - keep comments in deno.jsonc\n"
         );
+    }
+
+    #[test]
+    fn notes_leave_out_the_version_heading() {
+        let changes = Changes {
+            commits: vec![
+                commit("feat(ui): add the release panel"),
+                commit("fix: keep comments in deno.jsonc"),
+                commit("feat: read gradle.properties"),
+            ],
+        };
+        let notes = changes
+            .section(&Version::new(1, 5, 0), "2026-11-04".to_string())
+            .notes();
+
+        assert_eq!(
+            notes,
+            "### Added\n\
+             \n\
+             - **ui**: add the release panel\n\
+             - read gradle.properties\n\
+             \n\
+             ### Fixed\n\
+             \n\
+             - keep comments in deno.jsonc\n"
+        );
+    }
+
+    #[test]
+    fn notes_of_a_section_without_entries_are_empty() {
+        let changes = Changes {
+            commits: vec![commit("docs: explain the panel")],
+        };
+
+        let section = changes.section(&Version::new(1, 5, 0), "2026-11-04".to_string());
+
+        assert_eq!(section.notes(), "");
     }
 
     #[test]
