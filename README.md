@@ -12,9 +12,10 @@ kraken releases a project in one command: it bumps the version, commits, tags an
 - Bumps patch, minor or major in `package.json`, `Cargo.toml`, `pyproject.toml`, `deno.json`, `jsr.json`, `gradle.properties`, `pubspec.yaml`, `composer.json`, a browser extension's `manifest.json`, `Directory.Build.props`, a `.csproj`, an Xcode `project.pbxproj`, an XcodeGen `project.yml` or `VERSION`, or works with git tags alone
 - Changes only the version string: comments, quotes and formatting stay
 - Updates the lock file with no network: the project's own entry in `package-lock.json`, `Cargo.lock` or `uv.lock`, and `content-hash` in `composer.lock`
-- Suggests patch, minor or major from the conventional commits since the latest tag and starts the panel on it; `kraken auto --yes` takes it in scripts
+- Releases pre-releases such as `1.4.0-rc.1` with `--pre alpha|beta|rc`, counts them up, and makes the final version when you leave `--pre` out; Python files get `1.4.0rc1`
+- Suggests patch, minor or major from the conventional commits since the latest final release tag and starts the panel on it; `kraken auto --yes` takes it in scripts
 - Refuses a dirty tree, a shallow clone, tags on origin you have not fetched and a version that is not above the latest tag
-- Adds a section to `CHANGELOG.md` from the commits since the last tag. `kraken changelog` creates the file with a line that turns this on; an existing changelog needs that line added
+- Adds a section to `CHANGELOG.md` from the commits since the latest final release tag. `kraken changelog` creates the file with a line that turns this on; an existing changelog needs that line added
 - Commits, creates an annotated tag and pushes the branch and the tag in one atomic push
 - Puts HEAD and the files back if anything fails before the tag
 - A full-screen panel for releases by hand, `--yes` and `--dry-run` for scripts
@@ -60,7 +61,7 @@ cargo run -- patch --dry-run
 
 - [Usage](docs/usage.md): install, commands and flags, the panel, scripts and CI
 - [How it works](docs/how-it-works.md): checks, version files, lock files, changelog, commit, tag, push, rollback
-- [Limits](docs/limits.md): one version per repository, `X.Y.Z` only, no GitHub releases
+- [Limits](docs/limits.md): one version per repository, pre-release labels, files that take numbers only, no GitHub releases
 - [Development](docs/development.md): prerequisites, checks, project structure
 - [Releasing kraken](docs/releasing.md): the release workflow and its secrets
 

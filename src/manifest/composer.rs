@@ -5,9 +5,29 @@ use anyhow::{Context, Result, bail};
 use jsonc_parser::cst::CstNode;
 
 use super::{existing, package_json};
+use crate::version::parse_version as parse_semver;
 
 const FILE: &str = "composer.json";
 const LOCK: &str = "composer.lock";
+
+/// The pre-release labels Composer knows, in lowercase.
+const LABELS: [&str; 5] = ["alpha", "beta", "rc", "patch", "dev"];
+
+/// Reads a version; a pre-release must carry a label that Composer takes.
+pub fn parse_version(text: &str) -> Result<semver::Version> {
+    let version = parse_semver(text)?;
+    let label = version
+        .pre
+        .as_str()
+        .split(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !version.pre.is_empty() && !LABELS.contains(&label.as_str()) {
+        bail!("\"{text}\": Composer takes only the labels alpha, beta, RC, patch and dev");
+    }
+    Ok(version)
+}
 
 /// The top-level keys Composer hashes, `config.platform` and `config.policy` besides.
 const HASHED_KEYS: [&str; 11] = [
@@ -194,6 +214,33 @@ pub fn set_lock_hash(root: &Path, lock: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn takes_the_labels_composer_knows() {
+        for text in [
+            "1.4.0-rc.1",
+            "1.4.0-RC1",
+            "1.4.0-beta.2",
+            "1.4.0-alpha.1",
+            "1.4.0-dev",
+            "1.4.0",
+        ] {
+            assert_eq!(parse_version(text).unwrap().to_string(), text);
+        }
+    }
+
+    #[test]
+    fn refuses_a_label_composer_does_not_take() {
+        for text in ["1.4.0-preview.1", "1.4.0-SNAPSHOT", "1.4.0-1"] {
+            let err = parse_version(text).unwrap_err().to_string();
+            assert_eq!(
+                err,
+                format!(
+                    "\"{text}\": Composer takes only the labels alpha, beta, RC, patch and dev"
+                )
+            );
+        }
+    }
 
     const COMPOSER: &str = r#"{
     "name": "acme/widget",

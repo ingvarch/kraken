@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use semver::Version;
 use toml_edit::{DocumentMut, Item, Value};
 
-use crate::version::parse_release;
+use crate::version::{parse_final, parse_version};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -109,6 +109,38 @@ impl Kind {
             }
         };
         Ok(existing(root, name))
+    }
+
+    /// What limits this kind's version to numbers, `None` when a pre-release is fine.
+    fn numbers_only(self) -> Option<&'static str> {
+        match self {
+            Kind::Xcode | Kind::XcodeGen => Some("MARKETING_VERSION"),
+            Kind::WebExtension => Some("a browser extension's version"),
+            _ => None,
+        }
+    }
+
+    /// Parses `text`, a version as this kind's file spells it.
+    pub fn parse_version(self, text: &str) -> Result<Version> {
+        match self {
+            Kind::Pyproject => pyproject::parse_pep440(text),
+            Kind::Composer => composer::parse_version(text),
+            _ => match self.numbers_only() {
+                Some(what) => parse_final(text, what),
+                None => parse_version(text),
+            },
+        }
+    }
+
+    /// The text this kind's files get for `version`.
+    pub fn spell(self, version: &Version) -> Result<String> {
+        match (self, self.numbers_only()) {
+            (Kind::Pyproject, _) => pyproject::pep440(version),
+            (_, Some(what)) if !version.pre.is_empty() => {
+                bail!("{what} takes numbers only, so it cannot be {version}")
+            }
+            _ => Ok(version.to_string()),
+        }
     }
 
     pub fn read_version(self, text: &str) -> Result<Option<String>> {
@@ -213,7 +245,12 @@ pub fn detect(root: &Path, is_ignored: impl Fn(&str) -> Result<bool>) -> Result<
         let version = fs::read_to_string(root.join(&path))
             .map_err(anyhow::Error::from)
             .and_then(|text| kind.read_version(&text))
-            .and_then(|version| version.as_deref().map(parse_release).transpose())
+            .and_then(|version| {
+                version
+                    .as_deref()
+                    .map(|text| kind.parse_version(text))
+                    .transpose()
+            })
             .with_context(|| path.clone())?;
         if let Some(version) = version {
             let lock = kind.lock_file(root)?;
@@ -726,6 +763,116 @@ mod tests {
             find(Kind::Pubspec, dir.path()).as_deref(),
             Some("pubspec.yaml")
         );
+    }
+
+    fn v(text: &str) -> Version {
+        Version::parse(text).unwrap()
+    }
+
+    #[test]
+    fn semver_files_spell_a_pre_release_as_is() {
+        for kind in [
+            Kind::PackageJson,
+            Kind::CargoToml,
+            Kind::VersionFile,
+            Kind::Deno,
+            Kind::Jsr,
+            Kind::Gradle,
+            Kind::Pubspec,
+            Kind::Composer,
+            Kind::MsBuildProps,
+            Kind::DotnetProject,
+        ] {
+            assert_eq!(
+                kind.spell(&v("1.4.0-rc.1")).unwrap(),
+                "1.4.0-rc.1",
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pyproject_spells_pep440() {
+        assert_eq!(Kind::Pyproject.spell(&v("1.4.0-rc.1")).unwrap(), "1.4.0rc1");
+        assert_eq!(Kind::Pyproject.spell(&v("1.4.0")).unwrap(), "1.4.0");
+    }
+
+    #[test]
+    fn numbers_only_files_cannot_spell_a_pre_release() {
+        let cases = [
+            (Kind::Xcode, "MARKETING_VERSION"),
+            (Kind::XcodeGen, "MARKETING_VERSION"),
+            (Kind::WebExtension, "a browser extension's version"),
+        ];
+        for (kind, what) in cases {
+            let err = kind.spell(&v("1.4.0-rc.1")).unwrap_err().to_string();
+            assert_eq!(
+                err,
+                format!("{what} takes numbers only, so it cannot be 1.4.0-rc.1")
+            );
+            assert_eq!(kind.spell(&v("1.4.0")).unwrap(), "1.4.0");
+            let err = kind.parse_version("1.4.0-rc.1").unwrap_err().to_string();
+            assert_eq!(err, format!("\"1.4.0-rc.1\": {what} takes numbers only"));
+        }
+    }
+
+    #[test]
+    fn detects_a_pre_release_in_package_json() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "version": "1.4.0-rc.1" }"#,
+        )
+        .unwrap();
+
+        let found = detect(dir.path(), |_| Ok(false)).unwrap();
+
+        assert_eq!(found[0].version, v("1.4.0-rc.1"));
+    }
+
+    #[test]
+    fn detects_pep440_in_pyproject() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nversion = \"1.4.0rc1\"\n",
+        )
+        .unwrap();
+
+        let found = detect(dir.path(), |_| Ok(false)).unwrap();
+
+        assert_eq!(found[0].version, v("1.4.0-rc.1"));
+    }
+
+    #[test]
+    fn pyproject_in_another_spelling_is_refused_with_the_file_name() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nversion = \"1.4.0-rc.1\"\n",
+        )
+        .unwrap();
+
+        let err = format!("{:#}", detect(dir.path(), |_| Ok(false)).unwrap_err());
+
+        assert_eq!(
+            err,
+            "pyproject.toml: \"1.4.0-rc.1\" is not X.Y.Z or X.Y.Z with aN, bN or rcN, such as 1.4.0rc1"
+        );
+    }
+
+    #[test]
+    fn reads_snapshot_from_gradle_properties() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("gradle.properties"),
+            "version=1.4.0-SNAPSHOT\n",
+        )
+        .unwrap();
+
+        let found = detect(dir.path(), |_| Ok(false)).unwrap();
+
+        assert_eq!(found[0].version, v("1.4.0-SNAPSHOT"));
     }
 
     #[test]

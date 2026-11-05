@@ -70,6 +70,11 @@ pub fn check_path_requirements(members: &[Member]) -> Result<()> {
             let Some(target) = members.iter().find(|target| target.name == dep.name) else {
                 continue;
             };
+            // cargo reports a path dependency without `version` as `*`, which accepts
+            // a pre-release in cargo, though `VersionReq` leaves pre-releases out of `*`.
+            if dep.req == "*" {
+                continue;
+            }
             if !VersionReq::parse(&dep.req)?.matches(&Version::parse(&target.version)?) {
                 bail!(
                     "{} depends on {} \"{}\", which does not accept {}; kraken does not change dependency requirements",
@@ -182,6 +187,33 @@ mod tests {
 
         assert!(err.contains("app"), "{err}");
         assert!(err.contains("engine \"^0.1.0\""), "{err}");
+    }
+
+    #[test]
+    fn star_requirement_accepts_a_pre_release() {
+        let members = [
+            member("app", "1.4.0-rc.1", Some(("engine", "*"))),
+            member("engine", "1.4.0-rc.1", None),
+        ];
+        check_path_requirements(&members).unwrap();
+    }
+
+    #[test]
+    fn caret_requirement_refuses_a_pre_release() {
+        let members = [
+            member("app", "1.4.0-rc.1", Some(("engine", "^1.3.0"))),
+            member("engine", "1.4.0-rc.1", None),
+        ];
+        assert!(check_path_requirements(&members).is_err());
+    }
+
+    #[test]
+    fn exact_pre_release_requirement_accepts_a_later_one() {
+        let members = [
+            member("app", "1.4.0-rc.2", Some(("engine", "1.4.0-rc.1"))),
+            member("engine", "1.4.0-rc.2", None),
+        ];
+        check_path_requirements(&members).unwrap();
     }
 
     #[test]

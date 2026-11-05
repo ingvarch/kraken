@@ -9,7 +9,9 @@ use crate::changelog::{self, Changes, Section};
 use crate::commit::Tally;
 use crate::git::Git;
 use crate::manifest::{self, Manifest};
-use crate::version::{Level, bump, latest_release_tag, release_tag_version, suggest};
+use crate::version::{
+    Level, Pre, latest_final_tag, latest_release_tag, next, release_tag_version, suggest,
+};
 
 const ORIGIN: &str = "origin";
 
@@ -19,12 +21,16 @@ pub struct Release {
     pub manifests: Vec<Manifest>,
     pub current: Version,
     latest: Option<(String, Version)>,
+    /// The latest tag that is not a pre-release; the commits are counted from it.
+    final_tag: Option<String>,
+    /// Nothing was committed after the latest tag, pre-releases included.
+    idle: bool,
     /// The commit HEAD pointed at when kraken started.
     head: String,
     pub branch: String,
     /// The branch on origin to push to; `None` without an origin remote.
     pub remote_branch: Option<String>,
-    /// The commits since the latest tag.
+    /// The commits since the latest final tag.
     changes: Changes,
     /// Release date; set only when the release adds a section to CHANGELOG.md.
     date: Option<String>,
@@ -35,6 +41,8 @@ pub struct Current {
     manifests: Vec<Manifest>,
     pub version: Version,
     latest: Option<(String, Version)>,
+    final_tag: Option<String>,
+    idle: bool,
 }
 
 impl Current {
@@ -54,11 +62,18 @@ impl Current {
         let manifests = manifest::detect(git.root(), |path| git.is_ignored(path))?;
         let tags = git.merged_tags()?;
         let latest = latest_release_tag(&tags).map(|(tag, version)| (tag.to_string(), version));
+        let final_tag = latest_final_tag(&tags).map(|(tag, _)| tag.to_string());
         let version = current_version(&manifests, latest.as_ref().map(|(_, version)| version))?;
+        let idle = match &latest {
+            Some((tag, _)) => git.commits_since(Some(tag))?.is_empty(),
+            None => false,
+        };
         Ok(Current {
             manifests,
             version,
             latest,
+            final_tag,
+            idle,
         })
     }
 
@@ -68,7 +83,7 @@ impl Current {
     }
 }
 
-/// The release the commits since the latest tag call for, worked out without changing anything.
+/// The release the commits since the latest final tag call for, worked out without changing anything.
 pub struct Next {
     pub current: Version,
     pub version: Version,
@@ -80,15 +95,16 @@ pub struct Next {
 
 impl Next {
     /// Runs the tag checks of a release; skips the branch, clean-tree and origin checks.
-    pub fn of(dir: &Path) -> Result<Next> {
+    pub fn of(dir: &Path, pre: Option<Pre>) -> Result<Next> {
         let git = Git::discover(dir)?;
         git.head()?;
         git.ensure_not_shallow()?;
         let current = Current::read(&git)?;
-        let latest_tag = current.latest.as_ref().map(|(tag, _)| tag.clone());
+        ensure_new_commits(pre, current.idle, current.latest.as_ref())?;
+        let latest_tag = current.final_tag.clone();
         let commits = Tally::of(&git.commits_since(latest_tag.as_deref())?);
         let level = auto_level(&current.version, &commits, latest_tag.as_deref())?;
-        let version = bump(&current.version, level);
+        let version = next(&current.version, level, pre)?;
         next_tag(&git, current.latest.as_ref(), &version)?;
         Ok(Next {
             warning: current.warning(),
@@ -118,6 +134,10 @@ pub struct Plan {
     pub commit: Option<String>,
     /// The section CHANGELOG.md gets; `None` without CHANGELOG.md.
     pub changelog: Option<Section>,
+    /// Spellings that differ from the tag's, with the files that get each.
+    pub other_spellings: Vec<(String, Vec<String>)>,
+    /// The final version that gets the changelog section a pre-release leaves out.
+    pub changelog_waits: Option<Version>,
 }
 
 impl Release {
@@ -131,6 +151,8 @@ impl Release {
             manifests,
             version: current,
             latest,
+            final_tag,
+            idle,
         } = Current::read(&git)?;
         let remote_branch = git.has_remote(ORIGIN)?.then(|| {
             git.upstream(&branch, ORIGIN)
@@ -141,13 +163,15 @@ impl Release {
             .then(|| changelog::ident_date(&git.committer_ident()?))
             .transpose()?;
         let changes = Changes {
-            commits: git.commits_since(latest.as_ref().map(|(tag, _)| tag.as_str()))?,
+            commits: git.commits_since(final_tag.as_deref())?,
         };
         Ok(Release {
             git,
             manifests,
             current,
             latest,
+            final_tag,
+            idle,
             head,
             branch,
             remote_branch,
@@ -160,27 +184,37 @@ impl Release {
         Tally::of(&self.changes.commits)
     }
 
-    /// The level the commits since the latest tag call for.
+    /// The level the commits since the latest final tag call for.
     pub fn suggested(&self) -> Option<Level> {
         suggest(&self.current, &self.tally())
     }
 
     /// The suggested level; fails when there are no commits to take it from.
-    pub fn auto_level(&self) -> Result<Level> {
-        auto_level(&self.current, &self.tally(), self.latest_tag())
+    pub fn auto_level(&self, pre: Option<Pre>) -> Result<Level> {
+        ensure_new_commits(pre, self.idle, self.latest.as_ref())?;
+        auto_level(&self.current, &self.tally(), self.final_tag())
     }
 
+    /// The highest release tag, pre-releases included.
     pub fn latest_tag(&self) -> Option<&str> {
         self.latest.as_ref().map(|(tag, _)| tag.as_str())
     }
 
+    /// The tag the commits are counted from.
+    pub fn final_tag(&self) -> Option<&str> {
+        self.final_tag.as_deref()
+    }
+
     /// Warns when the version files and the latest tag disagree,
     /// and when a tag exists but nothing was committed after it.
-    pub fn warnings(&self) -> Vec<String> {
-        let empty = self
-            .latest_tag()
-            .filter(|_| self.changes.commits.is_empty())
-            .map(|tag| format!("no commits since {tag}"));
+    /// A pre-release counts from the latest tag of any kind, a final release from the latest final tag.
+    pub fn warnings(&self, pre: Option<Pre>) -> Vec<String> {
+        let since = if pre.is_some() {
+            self.latest_tag().filter(|_| self.idle)
+        } else {
+            self.final_tag().filter(|_| self.changes.commits.is_empty())
+        };
+        let empty = since.map(|tag| format!("no commits since {tag}"));
         tag_warning(&self.manifests, &self.current, self.latest.as_ref())
             .into_iter()
             .chain(empty)
@@ -204,19 +238,41 @@ impl Release {
         Ok(None)
     }
 
-    pub fn plan(&self, level: Level) -> Result<Plan> {
-        let version = bump(&self.current, level);
+    pub fn plan(&self, level: Level, pre: Option<Pre>) -> Result<Plan> {
+        let version = next(&self.current, level, pre)?;
         let tag = next_tag(&self.git, self.latest.as_ref(), &version)?;
 
         let mut files = Vec::new();
+        let mut spellings: Vec<(String, Vec<String>)> = Vec::new();
         for manifest in &self.manifests {
-            files.push(manifest.path.clone());
-            files.extend(manifest.lock.clone());
+            let spelled = manifest
+                .kind
+                .spell(&version)
+                .with_context(|| manifest.path.clone())?;
+            let text = fs::read_to_string(self.git.root().join(&manifest.path))
+                .with_context(|| manifest.path.clone())?;
+            manifest
+                .kind
+                .set_version(&text, &spelled)
+                .with_context(|| manifest.path.clone())?;
+            let mut own = vec![manifest.path.clone()];
+            own.extend(manifest.lock.clone());
+            files.extend(own.clone());
+            if spelled != version.to_string() {
+                match spellings.iter_mut().find(|(known, _)| *known == spelled) {
+                    Some((_, known)) => known.extend(own),
+                    None => spellings.push((spelled, own)),
+                }
+            }
         }
+        let is_final = version.pre.is_empty();
         let section = self
             .date
             .clone()
+            .filter(|_| is_final)
             .map(|date| self.changes.section(&version, date));
+        let changelog_waits = (self.date.is_some() && !is_final)
+            .then(|| Version::new(version.major, version.minor, version.patch));
         if section.is_some() {
             files.push(changelog::FILE.to_string());
         }
@@ -247,6 +303,8 @@ impl Release {
             untracked,
             commit,
             changelog: section,
+            other_spellings: spellings,
+            changelog_waits,
         })
     }
 
@@ -293,9 +351,9 @@ impl Release {
 
     fn write_files(&self, plan: &Plan, originals: &HashMap<String, String>) -> Result<()> {
         let root = self.git.root();
-        let version = plan.version.to_string();
         for manifest in &self.manifests {
             let name = &manifest.path;
+            let version = manifest.kind.spell(&plan.version)?;
             let text = manifest
                 .kind
                 .set_version(&originals[name], &version)
@@ -307,6 +365,7 @@ impl Release {
         }
         for manifest in &self.manifests {
             if let Some(lock) = &manifest.lock {
+                let version = manifest.kind.spell(&plan.version)?;
                 let text = manifest
                     .kind
                     .update_lock(root, &version, &originals[lock])
@@ -365,6 +424,20 @@ pub fn auto_level(current: &Version, tally: &Tally, since: Option<&str>) -> Resu
             since.unwrap_or("the first commit")
         )
     })
+}
+
+/// A pre-release counts from the latest tag of any kind, so it fails when nothing was committed after it.
+fn ensure_new_commits(
+    pre: Option<Pre>,
+    idle: bool,
+    latest: Option<&(String, Version)>,
+) -> Result<()> {
+    match latest {
+        Some((tag, _)) if pre.is_some() && idle => {
+            bail!("no commits since {tag}; nothing to release")
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The tag for `version`; fails when it exists or is not above the latest tag.
@@ -556,7 +629,10 @@ mod tests {
         let local = ["v1.0.0".to_string()];
         let remote = ["v1.0.0", "v1.1.0", "nightly", "v2.0.0-rc.1"].map(String::from);
 
-        assert_eq!(missing_release_tags(&local, &remote), ["v1.1.0"]);
+        assert_eq!(
+            missing_release_tags(&local, &remote),
+            ["v2.0.0-rc.1", "v1.1.0"]
+        );
     }
 
     #[test]

@@ -2,12 +2,12 @@ use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use kraken::changelog::{self, Setup};
 use kraken::commit::Tally;
 use kraken::release::{Current, Next, Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
-use kraken::version::{Level, suggestion_warning};
+use kraken::version::{Level, Pre, next, pre_release_level, suggestion_warning};
 use ratatui::crossterm::style::Stylize;
 use semver::Version;
 
@@ -16,7 +16,8 @@ use semver::Version;
 #[command(
     version,
     args_conflicts_with_subcommands = true,
-    disable_help_subcommand = true
+    disable_help_subcommand = true,
+    group(ArgGroup::new("target").args(["level", "pre"]).multiple(true))
 )]
 struct Cli {
     #[command(subcommand)]
@@ -26,12 +27,16 @@ struct Cli {
     #[arg(value_enum)]
     level: Option<LevelArg>,
 
+    /// Make a pre-release: alpha, beta or rc
+    #[arg(long, value_enum, value_name = "LABEL")]
+    pre: Option<Pre>,
+
     /// Answer yes to every question, including the push to origin
-    #[arg(short, long, requires = "level")]
+    #[arg(short, long, requires = "target")]
     yes: bool,
 
     /// Show what would happen and change nothing
-    #[arg(long, requires = "level")]
+    #[arg(long, requires = "target")]
     dry_run: bool,
 
     /// Leave CHANGELOG.md out of this release
@@ -54,6 +59,10 @@ enum Command {
         /// Print the version the next release gets, with the level taken from the commits
         #[arg(long)]
         next: bool,
+
+        /// Make the next version a pre-release: alpha, beta or rc
+        #[arg(long, value_enum, value_name = "LABEL", requires = "next")]
+        pre: Option<Pre>,
     },
     /// Create CHANGELOG.md, which every release then adds a section to
     Changelog,
@@ -71,17 +80,24 @@ fn main() -> ExitCode {
 
 fn run(cli: &Cli) -> Result<()> {
     match cli.command {
-        Some(Command::Version { next }) => return print_version(next),
+        Some(Command::Version { next, pre }) => return print_version(next, pre),
         Some(Command::Changelog) => return create_changelog(),
         None => {}
     }
     let release = Release::prepare(&std::env::current_dir()?, !cli.no_changelog)?;
-    let level = cli.level.map(|arg| level(arg, &release)).transpose()?;
+    let level = match cli.level {
+        Some(arg) => Some(level(arg, &release, cli.pre)?),
+        None if cli.pre.is_some() => pre_release_level(&release.current),
+        None => None,
+    };
+    if let Some(level) = level {
+        next(&release.current, level, cli.pre)?;
+    }
     if opens_panel(cli, io::stdin().is_terminal(), io::stdout().is_terminal()) {
-        return release_in_panel(&release, level);
+        return release_in_panel(&release, level, cli.pre);
     }
 
-    print_summary(&release);
+    print_summary(&release, cli.pre);
     if let (Some(LevelArg::Auto), Some(level)) = (cli.level, level) {
         println!("{}", level_line(level, &release.current, &release.tally()));
     }
@@ -89,6 +105,12 @@ fn run(cli: &Cli) -> Result<()> {
         eprintln!("warning: {warning}");
     }
     let Some(level) = level else {
+        if cli.pre.is_some() {
+            bail!(
+                "--pre without a level continues a pre-release, and {} is not one; pass patch, minor, major or auto",
+                release.current
+            );
+        }
         bail!(
             "choosing the level needs stdin and stdout to be a terminal; pass patch, minor, major or auto"
         );
@@ -99,7 +121,7 @@ fn run(cli: &Cli) -> Result<()> {
     if let Some(warning) = suggestion_warning(level, release.suggested()) {
         eprintln!("warning: {warning}");
     }
-    let plan = release.plan(level)?;
+    let plan = release.plan(level, cli.pre)?;
 
     if cli.dry_run {
         print_dry_run(&release, &plan);
@@ -109,12 +131,12 @@ fn run(cli: &Cli) -> Result<()> {
     finish(&release, &plan, true)
 }
 
-fn level(arg: LevelArg, release: &Release) -> Result<Level> {
+fn level(arg: LevelArg, release: &Release, pre: Option<Pre>) -> Result<Level> {
     match arg {
         LevelArg::Patch => Ok(Level::Patch),
         LevelArg::Minor => Ok(Level::Minor),
         LevelArg::Major => Ok(Level::Major),
-        LevelArg::Auto => release.auto_level(),
+        LevelArg::Auto => release.auto_level(pre),
     }
 }
 
@@ -128,9 +150,9 @@ fn level_line(level: Level, current: &Version, tally: &Tally) -> String {
     }
 }
 
-fn print_version(next: bool) -> Result<()> {
+fn print_version(next: bool, pre: Option<Pre>) -> Result<()> {
     if next {
-        return print_next_version();
+        return print_next_version(pre);
     }
     let current = Current::of(&std::env::current_dir()?)?;
     if let Some(warning) = current.warning() {
@@ -140,8 +162,8 @@ fn print_version(next: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_next_version() -> Result<()> {
-    let next = Next::of(&std::env::current_dir()?)?;
+fn print_next_version(pre: Option<Pre>) -> Result<()> {
+    let next = Next::of(&std::env::current_dir()?, pre)?;
     if let Some(warning) = next.warning() {
         eprintln!("warning: {warning}");
     }
@@ -185,8 +207,8 @@ fn finish(release: &Release, plan: &Plan, push: bool) -> Result<()> {
 }
 
 /// Asks for the level and confirmations in a full-screen panel, then releases after it closes.
-fn release_in_panel(release: &Release, level: Option<Level>) -> Result<()> {
-    let mut warnings = release.warnings();
+fn release_in_panel(release: &Release, level: Option<Level>, pre: Option<Pre>) -> Result<()> {
+    let mut warnings = release.warnings(pre);
     warnings.extend(check_origin(release)?);
     let facts = Facts {
         version_files: release
@@ -196,6 +218,7 @@ fn release_in_panel(release: &Release, level: Option<Level>) -> Result<()> {
             .collect(),
         current: release.current.clone(),
         latest_tag: release.latest_tag().map(str::to_string),
+        changes_since: release.final_tag().map(str::to_string),
         branch: release.branch.clone(),
         remote_branch: release.remote_branch.clone(),
         warnings,
@@ -203,9 +226,13 @@ fn release_in_panel(release: &Release, level: Option<Level>) -> Result<()> {
     };
     let choices = Level::ALL
         .iter()
-        .map(|&level| Choice {
-            level,
-            plan: release.plan(level).map_err(|err| format!("{err:#}")),
+        .filter_map(|&level| {
+            let version = next(&release.current, level, pre).ok()?;
+            Some(Choice {
+                level,
+                version,
+                plan: release.plan(level, pre).map_err(|err| format!("{err:#}")),
+            })
         })
         .collect();
 
@@ -272,7 +299,7 @@ fn opens_panel(cli: &Cli, stdin_is_terminal: bool, stdout_is_terminal: bool) -> 
     !cli.yes && !cli.dry_run && stdin_is_terminal && stdout_is_terminal
 }
 
-fn print_summary(release: &Release) {
+fn print_summary(release: &Release, pre: Option<Pre>) {
     if release.manifests.is_empty() {
         println!("No version files, using git tags");
     } else {
@@ -284,8 +311,8 @@ fn print_summary(release: &Release) {
         println!("Version files: {}", names.join(", "));
     }
     println!("Current version: {}", release.current);
-    println!("Changes: {}", release.tally().summary(release.latest_tag()));
-    for warning in release.warnings() {
+    println!("Changes: {}", release.tally().summary(release.final_tag()));
+    for warning in release.warnings(pre) {
         eprintln!("warning: {warning}");
     }
 }
@@ -299,6 +326,18 @@ fn print_dry_run(release: &Release, plan: &Plan) {
     println!("  tag {}", plan.tag);
     if let Some(push) = push_of(release, plan) {
         println!("  push {push}");
+    }
+    for (spelling, files) in &plan.other_spellings {
+        println!(
+            "  write {spelling} to {}: the PEP 440 spelling",
+            files.join(", ")
+        );
+    }
+    if let Some(version) = &plan.changelog_waits {
+        println!(
+            "  leave {} alone: {version} gets the section",
+            changelog::FILE
+        );
     }
     if let Some(section) = &plan.changelog {
         println!("  add to {}:\n", changelog::FILE);
@@ -364,6 +403,39 @@ mod tests {
 
         assert!(matches!(auto.level, Some(LevelArg::Auto)));
         assert!(!opens_panel(&auto, true, true));
+    }
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("kraken").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn pre_parses_without_a_level() {
+        let continuing = cli(&["--pre", "rc", "--yes"]);
+
+        assert!(continuing.level.is_none());
+        assert_eq!(continuing.pre, Some(Pre::Rc));
+        assert!(!opens_panel(&continuing, true, true));
+        assert_eq!(cli(&["minor", "--pre", "beta"]).pre, Some(Pre::Beta));
+    }
+
+    #[test]
+    fn yes_needs_a_level_or_pre() {
+        for flag in ["--yes", "--dry-run"] {
+            let err = parse(&[flag]).err().expect("must fail").to_string();
+            assert!(err.contains("<LEVEL|--pre <LABEL>>"), "{err}");
+            assert!(parse(&[flag, "--pre", "rc"]).is_ok());
+            assert!(parse(&[flag, "patch"]).is_ok());
+        }
+    }
+
+    #[test]
+    fn pre_takes_only_alpha_beta_and_rc() {
+        let err = parse(&["--pre", "dev"])
+            .err()
+            .expect("must fail")
+            .to_string();
+        assert!(err.contains("[possible values: alpha, beta, rc]"), "{err}");
     }
 
     #[test]
