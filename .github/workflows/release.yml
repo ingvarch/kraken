@@ -50,3 +50,26 @@ jobs:
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+
+  # crates.io trusts this workflow (Trusted Publishing on kraken-release), so the
+  # repository keeps no crates.io secret. A published version cannot be deleted,
+  # so this runs after the GitHub release.
+  crate:
+    name: crates.io
+    needs: release
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: publish
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
