@@ -130,4 +130,20 @@ If there is an `origin` remote, kraken asks whether to push the branch and the t
 
 ## Rollback
 
-If anything fails before the tag exists, kraken moves HEAD back and puts the files back as they were, `CHANGELOG.md` included.
+If anything fails before the tag exists, kraken moves HEAD back and puts the files back as they were, `CHANGELOG.md` included. For a release that went through, use [`kraken undo`](#undo).
+
+## Undo
+
+`kraken undo` removes one release: the highest release tag reachable from HEAD. The tag must point at HEAD, so a release with commits after it is refused.
+
+The tag must be kraken's: annotated, with the tag name as the message. A lightweight tag, or a tag with another message such as the one `npm version` writes, is refused.
+
+kraken tells a release commit from a tag-only release by the subject of HEAD:
+
+- The subject is `chore(release): <tag>`. This is a release commit. It must have one parent and may change only version files, their lock files and `CHANGELOG.md`.
+- Any other subject, and there are version files. kraken would have made a commit, so it did not make this release, and undo refuses.
+- Any other subject, and no version files. The release only tagged HEAD, and undo deletes the tag.
+
+Undo removes only a release that is not pushed. No remote-tracking branch may contain the release commit. When there is an `origin` remote, kraken also asks origin with `git ls-remote`. The tag is pushed when origin has the same tag object. The commit is pushed when a branch on origin points at it or at a commit that contains it. A tag on origin with the same name but another object does not count: someone else released that version first. If origin does not answer, undo refuses. A release only warns in this case, but undo deletes things and has to know. Other remotes are not asked.
+
+After you confirm, kraken checks again that nothing changed, runs `git reset --keep` to the parent of the release commit, and deletes the tag. `--keep` stops instead of throwing a change away, and untracked files stay. A lock file that git does not track, such as an ignored `Cargo.lock`, gets the version of the restored version files, because git cannot put it back. Last, kraken prints the current version.

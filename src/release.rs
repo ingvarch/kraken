@@ -38,11 +38,16 @@ pub struct Release {
 
 /// The version kraken releases from, read without changing or fetching anything.
 pub struct Current {
-    manifests: Vec<Manifest>,
+    pub(crate) manifests: Vec<Manifest>,
     pub version: Version,
-    latest: Option<(String, Version)>,
+    pub(crate) latest: Option<(String, Version)>,
     final_tag: Option<String>,
     idle: bool,
+}
+
+/// The subject of the commit that releases `tag`.
+pub(crate) fn release_subject(tag: &str) -> String {
+    format!("chore(release): {tag}")
 }
 
 impl Current {
@@ -58,7 +63,7 @@ impl Current {
         Ok(current)
     }
 
-    fn read(git: &Git) -> Result<Current> {
+    pub(crate) fn read(git: &Git) -> Result<Current> {
         let manifests = manifest::detect(git.root(), |path| git.is_ignored(path))?;
         let tags = git.merged_tags()?;
         let latest = latest_release_tag(&tags).map(|(tag, version)| (tag.to_string(), version));
@@ -242,7 +247,7 @@ impl Release {
         let version = next(&self.current, level, pre)?;
         let tag = next_tag(&self.git, self.latest.as_ref(), &version)?;
 
-        let mut files = Vec::new();
+        let mut files = manifest::release_files(&self.manifests);
         let mut spellings: Vec<(String, Vec<String>)> = Vec::new();
         for manifest in &self.manifests {
             let spelled = manifest
@@ -257,7 +262,6 @@ impl Release {
                 .with_context(|| manifest.path.clone())?;
             let mut own = vec![manifest.path.clone()];
             own.extend(manifest.lock.clone());
-            files.extend(own.clone());
             if spelled != version.to_string() {
                 match spellings.iter_mut().find(|(known, _)| *known == spelled) {
                     Some((_, known)) => known.extend(own),
@@ -295,7 +299,7 @@ impl Release {
             bail!("{file} is not tracked by git; commit it first");
         }
 
-        let commit = (!files.is_empty()).then(|| format!("chore(release): {tag}"));
+        let commit = (!files.is_empty()).then(|| release_subject(&tag));
         Ok(Plan {
             version,
             tag,
@@ -334,7 +338,9 @@ impl Release {
             .context("there is no origin remote")?;
         self.git
             .push(ORIGIN, &self.branch, remote_branch, &plan.tag)
-            .context("push failed; the release commit and tag stay local")
+            .context(
+                "push failed; the release commit and tag stay local; `kraken undo` removes them",
+            )
     }
 
     fn read_files(&self, files: &[String]) -> Result<HashMap<String, String>> {

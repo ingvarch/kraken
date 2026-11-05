@@ -18,6 +18,7 @@ kraken releases a project in one command: it bumps the version, commits, tags an
 - Adds a section to `CHANGELOG.md` from the commits since the latest final release tag. `kraken changelog` creates the file with a line that turns this on; an existing changelog needs that line added
 - Commits, creates an annotated tag and pushes the branch and the tag in one atomic push
 - Puts HEAD and the files back if anything fails before the tag
+- `kraken undo` removes a release that is not pushed yet
 - A full-screen panel for releases by hand, `--yes` and `--dry-run` for scripts
 
 ## Usage
@@ -60,7 +61,7 @@ cargo run -- patch --dry-run
 ## Documentation
 
 - [Usage](docs/usage.md): install, commands and flags, the panel, scripts and CI
-- [How it works](docs/how-it-works.md): checks, version files, lock files, changelog, commit, tag, push, rollback
+- [How it works](docs/how-it-works.md): checks, version files, lock files, changelog, commit, tag, push, rollback, undo
 - [Limits](docs/limits.md): one version per repository, pre-release labels, files that take numbers only, no GitHub releases
 - [Development](docs/development.md): prerequisites, checks, project structure
 - [Releasing kraken](docs/releasing.md): the release workflow and its secrets

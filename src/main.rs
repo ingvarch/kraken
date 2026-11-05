@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::{Result, bail};
@@ -7,6 +7,7 @@ use kraken::changelog::{self, Setup};
 use kraken::commit::Tally;
 use kraken::release::{Current, Next, Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
+use kraken::undo::Undo;
 use kraken::version::{Level, Pre, next, pre_release_level, suggestion_warning};
 use ratatui::crossterm::style::Stylize;
 use semver::Version;
@@ -66,6 +67,16 @@ enum Command {
     },
     /// Create CHANGELOG.md, which every release then adds a section to
     Changelog,
+    /// Remove the latest release while it is not pushed: delete its tag and drop its commit
+    Undo {
+        /// Answer yes to the question
+        #[arg(short, long)]
+        yes: bool,
+
+        /// List what would happen and change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -82,6 +93,7 @@ fn run(cli: &Cli) -> Result<()> {
     match cli.command {
         Some(Command::Version { next, pre }) => return print_version(next, pre),
         Some(Command::Changelog) => return create_changelog(),
+        Some(Command::Undo { yes, dry_run }) => return undo(yes, dry_run),
         None => {}
     }
     let release = Release::prepare(&std::env::current_dir()?, !cli.no_changelog)?;
@@ -174,6 +186,64 @@ fn print_next_version(pre: Option<Pre>) -> Result<()> {
     eprintln!("{}", level_line(next.level, &next.current, &next.commits));
     println!("{}", next.version);
     Ok(())
+}
+
+fn undo(yes: bool, dry_run: bool) -> Result<()> {
+    let undo = Undo::prepare(&std::env::current_dir()?)?;
+    if undo.has_origin()? {
+        println!("Checking origin...");
+        undo.check_origin()?;
+    }
+    let steps = undo.steps();
+    if dry_run {
+        println!("Dry run, nothing changed. kraken undo would:");
+        print_steps(&steps);
+        return Ok(());
+    }
+    if !yes {
+        if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+            bail!("confirming needs stdin and stdout to be a terminal; pass --yes");
+        }
+        println!("kraken undo will:");
+        print_steps(&steps);
+        let question = format!("Undo release {}?", undo.tag);
+        if !confirm(&question, &mut io::stdin().lock(), &mut io::stdout())? {
+            println!("Nothing changed");
+            return Ok(());
+        }
+    }
+    let undone = undo.apply()?;
+    if let Some(commit) = &undo.commit {
+        println!("Dropped commit {}", commit.describe(&undo.tag));
+    }
+    println!("Deleted tag {}", undo.tag);
+    for (lock, version) in &undone.locks {
+        println!("Set {lock} to {version}");
+    }
+    for warning in &undone.warnings {
+        eprintln!("warning: {warning}");
+    }
+    println!(
+        "Current version: {}",
+        Current::of(&std::env::current_dir()?)?.version
+    );
+    Ok(())
+}
+
+fn print_steps(steps: &[String]) {
+    for step in steps {
+        println!("  {step}");
+    }
+}
+
+/// Asks `question` and reads one line. Only `y` or `yes`, in any case, is a yes.
+fn confirm(question: &str, input: &mut impl BufRead, output: &mut impl Write) -> io::Result<bool> {
+    write!(output, "{question} [y/N] ")?;
+    output.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    let answer = answer.trim();
+    Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
 fn create_changelog() -> Result<()> {
@@ -436,6 +506,49 @@ mod tests {
             .expect("must fail")
             .to_string();
         assert!(err.contains("[possible values: alpha, beta, rc]"), "{err}");
+    }
+
+    fn answer(text: &str) -> bool {
+        confirm("Undo?", &mut text.as_bytes(), &mut Vec::new()).unwrap()
+    }
+
+    #[test]
+    fn confirm_takes_y_and_yes() {
+        for text in ["y\n", "Y\n", "yes\n", " yes \n", "YES\n"] {
+            assert!(answer(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn confirm_defaults_to_no() {
+        for text in ["\n", "n\n", "nope\n", ""] {
+            assert!(!answer(text), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn confirm_prints_the_question() {
+        let mut output = Vec::new();
+        confirm("Undo release v1.0.0?", &mut "n\n".as_bytes(), &mut output).unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "Undo release v1.0.0? [y/N] "
+        );
+    }
+
+    #[test]
+    fn undo_takes_yes_and_dry_run() {
+        let parsed = cli(&["undo", "--yes", "--dry-run"]);
+
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Undo {
+                yes: true,
+                dry_run: true
+            })
+        ));
+        assert!(parse(&["undo", "patch"]).is_err());
     }
 
     #[test]
