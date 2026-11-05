@@ -3529,3 +3529,677 @@ fn pre_alone_continues_a_pre_release_in_a_dry_run() {
         stdout(&out)
     );
 }
+
+fn node_released(repo: &Repo) {
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+}
+
+/// A Go project with a committed CHANGELOG.md and a feature commit.
+fn go_with_changelog(repo: &Repo) {
+    repo.write("CHANGELOG.md", TEMPLATE);
+    go_module(repo);
+    repo.commit("feat: add a command");
+}
+
+fn amend_with_a_new_file(repo: &Repo) {
+    repo.write("src/lib.rs", "");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "--amend", "--no-edit"]);
+    repo.git(&["tag", "-f", "-a", "v1.2.4", "-m", "v1.2.4"]);
+}
+
+#[test]
+fn undo_removes_an_unpushed_release() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+    let before = repo.head();
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    let out = repo.kraken(&["undo", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.head(), before);
+    assert_eq!(repo.tags(), ["v1.2.3"]);
+    assert_eq!(repo.read("package.json"), PACKAGE_JSON);
+    assert_eq!(repo.read("package-lock.json"), PACKAGE_LOCK);
+    assert_eq!(repo.status(), "");
+    assert!(stdout(&out).contains("Dropped commit"), "{}", stdout(&out));
+    assert!(
+        stdout(&out).contains("Deleted tag v1.2.4"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stdout(&out).trim_end().ends_with("Current version: 1.2.3"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn undo_puts_the_changelog_back() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: add a command");
+    let changelog = repo.read("CHANGELOG.md");
+    assert_ok(&repo.kraken_dated(&["minor", "--yes"]));
+    assert_ne!(repo.read("CHANGELOG.md"), changelog);
+
+    assert_ok(&repo.kraken(&["undo", "--yes"]));
+
+    assert_eq!(repo.read("CHANGELOG.md"), changelog);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn undo_removes_a_tag_only_release() {
+    let repo = Repo::new();
+    go_module(&repo);
+    let head = repo.head();
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+    assert_eq!(repo.tags(), ["v0.0.1"]);
+
+    let out = repo.kraken(&["undo", "--yes"]);
+
+    assert_ok(&out);
+    assert!(repo.tags().is_empty());
+    assert_eq!(repo.head(), head);
+    assert!(!stdout(&out).contains("Dropped"), "{}", stdout(&out));
+}
+
+#[test]
+fn undo_sets_an_untracked_lock_back() {
+    let repo = Repo::new();
+    repo.write(".gitignore", "Cargo.lock\n");
+    repo.write("Cargo.toml", CARGO_TOML);
+    repo.write("src/lib.rs", "");
+    repo.commit_all();
+    repo.write("Cargo.lock", CARGO_LOCK);
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+    assert_eq!(
+        repo.read("Cargo.lock"),
+        CARGO_LOCK.replace("0.1.0", "0.1.1")
+    );
+
+    let out = repo.kraken(&["undo", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.read("Cargo.lock"), CARGO_LOCK);
+    assert!(
+        stdout(&out).contains("Set Cargo.lock to 0.1.0"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn undo_keeps_untracked_files() {
+    let repo = Repo::new();
+    repo.node();
+    repo.write("notes.txt", "mine");
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_ok(&repo.kraken(&["undo", "--yes"]));
+
+    assert_eq!(repo.read("notes.txt"), "mine");
+    assert_eq!(repo.status(), "?? notes.txt");
+}
+
+#[test]
+fn undo_removes_only_the_last_release() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let first = repo.head();
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_ok(&repo.kraken(&["undo", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v1.2.3", "v1.2.4"]);
+    assert_eq!(repo.head(), first);
+    assert_eq!(
+        repo.read("package.json"),
+        PACKAGE_JSON.replace("1.2.3", "1.2.4")
+    );
+
+    assert_ok(&repo.kraken(&["undo", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v1.2.3"]);
+    assert_eq!(repo.read("package.json"), PACKAGE_JSON);
+}
+
+#[test]
+fn undo_removes_one_of_two_tags_on_one_commit() {
+    let repo = Repo::new();
+    go_module(&repo);
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+    assert_eq!(repo.tags(), ["v0.0.1", "v0.0.2"]);
+
+    assert_ok(&repo.kraken(&["undo", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v0.0.1"]);
+}
+
+#[test]
+fn undo_removes_the_tag_only_release_above_a_release_commit() {
+    let repo = Repo::new();
+    go_with_changelog(&repo);
+    let before = repo.head();
+    assert_ok(&repo.kraken_dated(&["patch", "--yes"]));
+    let release_commit = repo.head();
+    assert_ok(&repo.kraken(&["patch", "--yes", "--no-changelog"]));
+    assert_eq!(repo.tag_commit("v0.0.2"), release_commit);
+
+    assert_ok(&repo.kraken(&["undo", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v0.0.1"]);
+    assert_eq!(repo.head(), release_commit);
+
+    assert_ok(&repo.kraken(&["undo", "--yes"]));
+
+    assert!(repo.tags().is_empty());
+    assert_eq!(repo.head(), before);
+}
+
+#[test]
+fn undo_works_after_a_rejected_push() {
+    let repo = Repo::new();
+    repo.node();
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    repo.write("a.txt", "");
+    repo.commit_all();
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    repo.write("b.txt", "");
+    repo.commit_all();
+    let before = repo.head();
+    assert_failed_with(&repo.kraken(&["patch", "--yes"]), "stay local");
+
+    let out = repo.kraken(&["undo", "--yes"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("Checking origin..."),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(repo.head(), before);
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn rejected_push_points_to_undo() {
+    let repo = Repo::new();
+    repo.node();
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    repo.write("a.txt", "");
+    repo.commit_all();
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["reset", "-q", "--hard", "HEAD~1"]);
+    repo.write("b.txt", "");
+    repo.commit_all();
+
+    assert_failed_with(&repo.kraken(&["patch", "--yes"]), "`kraken undo` removes");
+}
+
+#[test]
+fn undo_works_when_origin_has_another_tag_with_the_same_name() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    let other = Repo::new();
+    other.commit("feat: elsewhere");
+    other.add_origin(&origin);
+    other.git(&["tag", "-a", "v1.2.4", "-m", "v1.2.4"]);
+    other.git(&["push", "-q", "origin", "v1.2.4"]);
+
+    assert_ok(&repo.kraken(&["undo", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v1.2.3"]);
+}
+
+#[test]
+fn undo_refuses_a_pushed_tag() {
+    let repo = Repo::new();
+    repo.node();
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+    repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    let head = repo.head();
+
+    let out = repo.kraken(&["undo", "--yes"]);
+
+    assert_failed_with(&out, "tag v1.2.4 is already on origin");
+    assert_eq!(repo.tags(), ["v1.2.4"]);
+    assert_eq!(repo.head(), head);
+}
+
+#[test]
+fn undo_refuses_a_release_commit_pushed_without_its_tag() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    repo.git(&["push", "-q", "origin", "main"]);
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "already on origin/main");
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_asks_origin_for_its_branches() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "already on origin/main");
+}
+
+#[test]
+fn undo_refuses_when_origin_is_unreachable() {
+    let repo = Repo::new();
+    node_released(&repo);
+    repo.git(&["remote", "add", "origin", "/nonexistent/kraken-origin"]);
+
+    let out = repo.kraken(&["undo", "--yes"]);
+
+    assert_failed_with(&out, "could not check origin for v1.2.4");
+    assert_failed_with(&out, "needs origin to answer");
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_works_without_origin() {
+    let repo = Repo::new();
+    node_released(&repo);
+
+    let out = repo.kraken(&["undo", "--yes"]);
+
+    assert_ok(&out);
+    assert!(
+        !stdout(&out).contains("Checking origin"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn undo_refuses_commits_after_the_release() {
+    let repo = Repo::new();
+    node_released(&repo);
+    repo.commit("fix: later");
+
+    assert_failed_with(
+        &repo.kraken(&["undo", "--yes"]),
+        "the latest release v1.2.4 is not at HEAD; kraken undo removes only a release with no commits after it",
+    );
+}
+
+#[test]
+fn undo_refuses_an_amended_release_commit() {
+    let repo = Repo::new();
+    node_released(&repo);
+    repo.git(&["commit", "-q", "--amend", "--allow-empty", "-m", "changed"]);
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "not at HEAD");
+}
+
+#[test]
+fn undo_refuses_a_release_commit_that_changes_other_files() {
+    let repo = Repo::new();
+    node_released(&repo);
+    amend_with_a_new_file(&repo);
+
+    let out = repo.kraken(&["undo", "--yes"]);
+
+    assert_failed_with(&out, "changes files kraken does not write: src/lib.rs");
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_refuses_a_lightweight_tag() {
+    let repo = Repo::new();
+    repo.node();
+    repo.commit("chore(release): v1.2.4");
+    repo.git(&["tag", "v1.2.4"]);
+
+    assert_failed_with(
+        &repo.kraken(&["undo", "--yes"]),
+        "kraken did not make tag v1.2.4: kraken tags are annotated, with the tag name as the message",
+    );
+}
+
+#[test]
+fn undo_refuses_a_tag_with_another_message() {
+    let repo = Repo::new();
+    node_released(&repo);
+    repo.git(&["tag", "-f", "-a", "v1.2.4", "-m", "Release 1.2.4"]);
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "kraken did not make tag");
+}
+
+#[test]
+fn undo_refuses_a_tag_on_a_commit_kraken_did_not_make() {
+    let repo = Repo::new();
+    repo.node();
+    repo.commit("fix: a");
+    repo.git(&["tag", "-a", "v1.2.4", "-m", "v1.2.4"]);
+
+    assert_failed_with(
+        &repo.kraken(&["undo", "--yes"]),
+        "v1.2.4 is at HEAD, but HEAD is not its release commit \"chore(release): v1.2.4\"",
+    );
+    assert_eq!(repo.tags(), ["v1.2.4"]);
+}
+
+#[test]
+fn undo_refuses_a_merge_with_the_release_subject() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["checkout", "-q", "-b", "side"]);
+    repo.commit("feat: side");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.commit("feat: main");
+    repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "-m",
+        "chore(release): v1.2.4",
+        "side",
+    ]);
+    repo.git(&["tag", "-a", "v1.2.4", "-m", "v1.2.4"]);
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "is a merge");
+}
+
+#[test]
+fn undo_refuses_uncommitted_changes() {
+    let repo = Repo::new();
+    node_released(&repo);
+    repo.write("package.json", "{}");
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "uncommitted changes");
+}
+
+#[test]
+fn undo_refuses_a_detached_head() {
+    let repo = Repo::new();
+    node_released(&repo);
+    repo.git(&["checkout", "-q", "--detach"]);
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "detached");
+}
+
+#[test]
+fn undo_refuses_a_shallow_clone() {
+    let source = Repo::new();
+    node_released(&source);
+    source.write("a.txt", "");
+    source.commit_all();
+    let (_holder, clone) = shallow_clone(&source);
+
+    assert_failed_with(&kraken_in(&clone, &["undo", "--yes"]), "shallow");
+}
+
+#[test]
+fn undo_has_nothing_to_undo_without_release_tags() {
+    let repo = Repo::new();
+    repo.node();
+
+    assert_failed_with(
+        &repo.kraken(&["undo", "--yes"]),
+        "there is no release tag to undo",
+    );
+}
+
+#[test]
+fn undo_dry_run_changes_nothing() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let head = repo.head();
+
+    let out = repo.kraken(&["undo", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("Dry run, nothing changed. kraken undo would:"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        stdout(&out).contains("  delete tag v1.2.4"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(repo.head(), head);
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_dry_run_wins_over_yes() {
+    let repo = Repo::new();
+    node_released(&repo);
+
+    assert_ok(&repo.kraken(&["undo", "--yes", "--dry-run"]));
+
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_dry_run_asks_origin() {
+    let repo = Repo::new();
+    node_released(&repo);
+    repo.git(&["remote", "add", "origin", "/nonexistent/kraken-origin"]);
+
+    let out = repo.kraken(&["undo", "--dry-run"]);
+
+    assert_failed_with(&out, "needs origin to answer");
+}
+
+#[test]
+fn undo_dry_run_still_refuses() {
+    let repo = Repo::new();
+    node_released(&repo);
+    repo.commit("fix: later");
+
+    assert_failed_with(&repo.kraken(&["undo", "--dry-run"]), "not at HEAD");
+}
+
+#[test]
+fn undo_asks_only_in_a_terminal() {
+    let repo = Repo::new();
+    node_released(&repo);
+
+    let out = repo.kraken(&["undo"]);
+
+    assert_failed_with(
+        &out,
+        "confirming needs stdin and stdout to be a terminal; pass --yes",
+    );
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_takes_no_level() {
+    let repo = Repo::new();
+    node_released(&repo);
+
+    let out = repo.kraken(&["undo", "patch"]);
+
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn undo_refuses_when_the_repository_changed_after_the_start() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let undo = kraken::undo::Undo::prepare(repo.path()).unwrap();
+    repo.write("notes.md", "");
+    repo.commit_all();
+    let head = repo.head();
+
+    let err = undo.apply().unwrap_err().to_string();
+
+    assert!(err.contains("changed since kraken started"), "{err}");
+    assert_eq!(repo.head(), head);
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_refuses_uncommitted_changes_made_after_the_start() {
+    let repo = Repo::new();
+    repo.node();
+    repo.write("notes.txt", "a");
+    repo.commit_all();
+    repo.git(&["tag", "v1.2.3"]);
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+    let undo = kraken::undo::Undo::prepare(repo.path()).unwrap();
+    repo.write("notes.txt", "b");
+    let head = repo.head();
+
+    let err = undo.apply().unwrap_err().to_string();
+
+    assert!(err.contains("uncommitted changes"), "{err}");
+    assert_eq!(repo.head(), head);
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_refuses_when_the_tag_moved_after_the_start() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let undo = kraken::undo::Undo::prepare(repo.path()).unwrap();
+    repo.git(&["tag", "-f", "-a", "v1.2.4", "-m", "v1.2.4", "HEAD~1"]);
+    let head = repo.head();
+
+    let err = undo.apply().unwrap_err().to_string();
+
+    assert!(err.contains("changed since kraken started"), "{err}");
+    assert_eq!(repo.head(), head);
+}
+
+#[test]
+fn undo_refuses_when_the_branch_changed_after_the_start() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let undo = kraken::undo::Undo::prepare(repo.path()).unwrap();
+    repo.git(&["checkout", "-q", "-b", "other"]);
+    let head = repo.head();
+
+    let err = undo.apply().unwrap_err().to_string();
+
+    assert!(err.contains("changed since kraken started"), "{err}");
+    assert_eq!(repo.head(), head);
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_refuses_a_release_commit_that_is_the_first_commit() {
+    let repo = Repo::new();
+    repo.write("package.json", PACKAGE_JSON);
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "chore(release): v1.2.4"]);
+    repo.git(&["tag", "-a", "v1.2.4", "-m", "v1.2.4"]);
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "is the first commit");
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_works_when_origin_moved_on_to_a_commit_this_clone_lacks() {
+    let repo = Repo::new();
+    repo.node();
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    repo.git(&["push", "-q", "origin", "main"]);
+    let holder = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", origin.path().display());
+    git_in(holder.path(), &["clone", "-q", "-b", "main", &url, "other"]);
+    let other = holder.path().join("other");
+    git_in(
+        &other,
+        &["commit", "-q", "--allow-empty", "-m", "feat: elsewhere"],
+    );
+    git_in(&other, &["push", "-q", "origin", "main"]);
+    let before = repo.head();
+    assert_failed_with(&repo.kraken(&["patch", "--yes"]), "stay local");
+
+    let out = repo.kraken(&["undo", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.head(), before);
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn undo_refuses_a_release_commit_pushed_to_another_remote() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let upstream = bare_origin();
+    repo.git(&[
+        "remote",
+        "add",
+        "upstream",
+        upstream.path().to_str().unwrap(),
+    ]);
+    repo.git(&["push", "-q", "upstream", "main"]);
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "already on upstream/main");
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_refuses_when_an_origin_branch_is_ahead_of_the_release_commit() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    repo.git(&["checkout", "-q", "-b", "side"]);
+    repo.commit("feat: after the release");
+    repo.git(&["push", "-q", "origin", "side:main"]);
+    repo.git(&["checkout", "-q", "main"]);
+    repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+
+    assert_failed_with(&repo.kraken(&["undo", "--yes"]), "already on origin/main");
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn undo_removes_a_tag_only_release_whose_commit_is_on_origin() {
+    let repo = Repo::new();
+    go_module(&repo);
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    repo.git(&["push", "-q", "origin", "main"]);
+
+    assert_ok(&repo.kraken(&["undo", "--yes"]));
+
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn undo_names_the_branch_not_origin_head() {
+    let repo = Repo::new();
+    node_released(&repo);
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+    repo.git(&["push", "-q", "origin", "main"]);
+    repo.git(&["remote", "set-head", "origin", "main"]);
+
+    assert_failed_with(
+        &repo.kraken(&["undo", "--yes"]),
+        "already on origin/main; kraken",
+    );
+}

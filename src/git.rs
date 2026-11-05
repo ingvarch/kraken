@@ -7,6 +7,15 @@ use anyhow::{Context, Result, bail};
 use crate::cmd;
 use crate::commit::Commit;
 
+pub struct TagObject {
+    pub annotated: bool,
+    /// The tag object, or the commit for a lightweight tag.
+    pub id: String,
+    pub commit: String,
+    /// The first line of the tag message; empty for a lightweight tag.
+    pub subject: String,
+}
+
 pub struct Git {
     root: PathBuf,
 }
@@ -92,20 +101,122 @@ impl Git {
         Ok(list.lines().map(str::to_string).collect())
     }
 
-    /// Tags on `remote`. Asks the remote over the network without prompting for credentials
-    /// and gives up after a few seconds.
+    /// Tags on `remote`.
     pub fn remote_tags(&self, remote: &str) -> Result<Vec<String>> {
+        Ok(self
+            .remote_refs(remote)?
+            .into_iter()
+            .filter_map(|(_, name)| name.strip_prefix("refs/tags/").map(str::to_string))
+            .collect())
+    }
+
+    /// The branches and tags on `remote` as (object id, ref name). Asks the remote over the
+    /// network without prompting for credentials and gives up after a few seconds.
+    pub fn remote_refs(&self, remote: &str) -> Result<Vec<(String, String)>> {
         let mut command = Command::new("git");
         command
-            .args(["ls-remote", "--tags", "--refs", remote])
+            .args(["ls-remote", "--heads", "--tags", "--refs", remote])
             .current_dir(&self.root)
             .env("GIT_TERMINAL_PROMPT", "0");
         let list = cmd::run_with_limit(&mut command, Duration::from_secs(10))?;
         Ok(list
             .lines()
-            .filter_map(|line| line.split_once("\trefs/tags/"))
-            .map(|(_, tag)| tag.to_string())
+            .filter_map(|line| line.split_once('\t'))
+            .map(|(id, name)| (id.to_string(), name.to_string()))
             .collect())
+    }
+
+    /// The remote-tracking branches that contain `commit`, such as `origin/main`.
+    /// Skips `origin/HEAD`, which only points at one of them.
+    pub fn remote_branches_containing(&self, commit: &str) -> Result<Vec<String>> {
+        let list = self.run(&[
+            "for-each-ref",
+            "--contains",
+            commit,
+            "--format=%(if)%(symref)%(then)%(else)%(refname:lstrip=2)%(end)",
+            "refs/remotes",
+        ])?;
+        Ok(list
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// What `tag` is. A lightweight tag has no object of its own, so `id` is its commit.
+    pub fn tag_object(&self, tag: &str) -> Result<TagObject> {
+        let format =
+            "--format=%(objecttype)%00%(objectname)%00%(*objectname)%00%(contents:subject)";
+        let line = self.run(&["for-each-ref", format, &format!("refs/tags/{tag}")])?;
+        let mut fields = line.split('\0');
+        let (Some(kind), Some(id), Some(target), Some(subject)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            bail!("tag {tag} does not exist");
+        };
+        let annotated = kind == "tag";
+        Ok(TagObject {
+            annotated,
+            id: id.to_string(),
+            commit: if annotated { target } else { id }.to_string(),
+            subject: if annotated { subject } else { "" }.to_string(),
+        })
+    }
+
+    /// The parents and the subject of `rev`.
+    pub fn parents_and_subject(&self, rev: &str) -> Result<(Vec<String>, String)> {
+        let line = self.run(&["log", "-1", "--no-show-signature", "--format=%P%x00%s", rev])?;
+        let (parents, subject) = line.split_once('\0').unwrap_or((&line, ""));
+        Ok((
+            parents.split_whitespace().map(str::to_string).collect(),
+            subject.to_string(),
+        ))
+    }
+
+    /// The files `commit` changes; empty for a merge.
+    pub fn changed_files(&self, commit: &str) -> Result<Vec<String>> {
+        let list = self.run(&[
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "-z",
+            commit,
+        ])?;
+        Ok(list
+            .split('\0')
+            .filter(|file| !file.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Whether this repository has the commit `id`.
+    pub fn has_commit(&self, id: &str) -> bool {
+        self.run(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{id}^{{commit}}"),
+        ])
+        .is_ok()
+    }
+
+    pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool> {
+        cmd::run_check(
+            "git",
+            &["merge-base", "--is-ancestor", ancestor, descendant],
+            &self.root,
+        )
+    }
+
+    pub fn delete_tag(&self, tag: &str) -> Result<()> {
+        self.run(&["tag", "-d", tag]).map(drop)
+    }
+
+    /// Moves the branch, the index and the tracked files back to `commit`;
+    /// stops instead of throwing a change away.
+    pub fn reset_keep(&self, commit: &str) -> Result<()> {
+        self.run(&["reset", "--keep", "--quiet", commit]).map(drop)
     }
 
     pub fn tag_exists(&self, tag: &str) -> bool {

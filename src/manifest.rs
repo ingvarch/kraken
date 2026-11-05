@@ -230,6 +230,16 @@ pub struct Manifest {
     pub version: Version,
 }
 
+/// The version files and their lock files, relative to the repository root.
+pub fn release_files(manifests: &[Manifest]) -> Vec<String> {
+    manifests
+        .iter()
+        .flat_map(|manifest| [Some(&manifest.path), manifest.lock.as_ref()])
+        .flatten()
+        .cloned()
+        .collect()
+}
+
 /// Manifests in `root` that carry a version. A file that `is_ignored` is skipped.
 pub fn detect(root: &Path, is_ignored: impl Fn(&str) -> Result<bool>) -> Result<Vec<Manifest>> {
     let mut found: Vec<Manifest> = Vec::new();

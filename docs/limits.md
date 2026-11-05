@@ -11,6 +11,7 @@ What kraken does not support. What it does support is in [how-it-works.md](how-i
 - A Flutter app's iOS build turns `1.4.0-rc.1` into `1.4.0.1`. pub and Android take the version as it is, and kraken does not warn.
 - A path dependency with an explicit `version = "*"` cannot be told from one without `version`. kraken accepts both for a pre-release, but cargo refuses the first.
 - No GitHub releases.
+- `kraken undo` removes only the latest release, only at HEAD and only when it is not pushed. It asks only `origin` over the network and does not delete tags on origin.
 - The suggested level comes from the commit subjects and `BREAKING CHANGE:` footers. kraken does not compare the code or the public API.
 - kraken never suggests 1.0.0: leave 0.x with `major` when you are ready.
 - Changelog entries are the commit subjects as they are; kraken does not let you edit them before the release.
