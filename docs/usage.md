@@ -18,8 +18,8 @@ kraken version
 kraken changelog
 ```
 
-- `kraken` opens a full-screen panel: pick the level with the arrow keys (or `j`/`k`), see what the release will change and what it adds to the changelog, turn the push on or off with space, and release with enter. `esc` goes back, `q` quits. On enter the panel closes and kraken writes, commits, tags and pushes in the terminal, so git can ask for a passphrase or credentials there.
-- `kraken minor` opens the panel on the confirmation of a minor release.
+- `kraken` opens a full-screen panel. It starts on the level the commits since the latest tag suggest and counts them in the `Changes` row. Pick the level with the arrow keys (or `j`/`k`), see what the release will change and what it adds to the changelog, turn the push on or off with space, and release with enter. `esc` goes back, `q` quits. On enter the panel closes and kraken writes, commits, tags and pushes in the terminal, so git can ask for a passphrase or credentials there.
+- `kraken minor` opens the panel on the confirmation of a minor release. If the commits suggest a higher level, the confirmation warns about it.
 - `kraken minor --yes` opens no panel, asks nothing and pushes if `origin` exists. Use this in scripts.
 - `kraken minor --dry-run` shows what would change, with the whole changelog section, and changes nothing.
 - `kraken minor --no-changelog` releases without adding a section to `CHANGELOG.md`. It works with the panel, `--yes` and `--dry-run`.

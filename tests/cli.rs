@@ -784,6 +784,27 @@ fn dry_run_changes_nothing() {
 }
 
 #[test]
+fn dry_run_without_a_changelog_needs_no_committer_identity() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+    repo.commit("fix: c");
+
+    let out = isolate(Command::new(env!("CARGO_BIN_EXE_kraken")).args(["patch", "--dry-run"]))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "user.useConfigOnly")
+        .env("GIT_CONFIG_VALUE_0", "true")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+
+    assert_ok(&out);
+}
+
+#[test]
 fn warns_when_latest_tag_differs_from_version_files() {
     let repo = Repo::new();
     repo.node();
@@ -1784,4 +1805,188 @@ fn restores_the_changelog_when_commit_fails() {
 
     assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
     assert_eq!(repo.status(), "");
+}
+
+fn node_tagged(repo: &Repo) {
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+}
+
+#[test]
+fn summary_shows_the_changes_since_the_latest_tag() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    repo.commit("fix: b");
+
+    let out = repo.kraken(&["patch", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains(
+            "Current version: 1.2.3\nChanges: 1 feature, 1 fix since v1.2.3\nDry run, nothing changed."
+        ),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn summary_counts_every_commit_on_the_first_release() {
+    let repo = Repo::new();
+    repo.write("VERSION", "0.1.0\n");
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("Changes: 1 other commit since the first commit"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn summary_counts_the_commits_with_no_changelog() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: a");
+
+    let out = repo.kraken(&["patch", "--dry-run", "--no-changelog"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("Changes: 1 feature since v1.2.3"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn summary_counts_the_commits_without_a_changelog() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("fix: a");
+
+    let out = repo.kraken(&["patch", "--dry-run"]);
+
+    assert!(
+        stdout(&out).contains("Changes: 1 fix since v1.2.3"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!stdout(&out).contains("CHANGELOG.md"), "{}", stdout(&out));
+}
+
+#[test]
+fn lower_level_than_the_commits_suggest_warns() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+
+    let out = repo.kraken(&["patch", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stderr(&out).contains("warning: the new commits suggest a minor release"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn lower_level_warns_and_still_releases_with_yes() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat!: a");
+
+    let out = repo.kraken(&["minor", "--yes"]);
+
+    assert_ok(&out);
+    assert!(
+        stderr(&out).contains("warning: the new commits suggest a major release"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(repo.tags(), ["v1.2.3", "v1.3.0"]);
+}
+
+#[test]
+fn higher_level_than_the_commits_suggest_does_not_warn() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+
+    for level in ["minor", "major"] {
+        let out = repo.kraken(&[level, "--dry-run"]);
+
+        assert_ok(&out);
+        assert!(!stderr(&out).contains("suggest"), "{}", stderr(&out));
+    }
+}
+
+#[test]
+fn no_commits_since_the_tag_suggest_nothing() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+
+    let out = repo.kraken(&["patch", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("Changes: none since v1.2.3"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!stderr(&out).contains("suggest"), "{}", stderr(&out));
+}
+
+#[test]
+fn breaking_change_in_0x_suggests_minor() {
+    let repo = Repo::new();
+    repo.write("Cargo.toml", CARGO_TOML);
+    repo.write("Cargo.lock", CARGO_LOCK);
+    repo.write("src/lib.rs", "");
+    repo.commit_all();
+    repo.git(&["tag", "v0.1.0"]);
+    repo.commit("feat!: a");
+
+    let patch = repo.kraken(&["patch", "--dry-run"]);
+    let minor = repo.kraken(&["minor", "--dry-run"]);
+
+    assert!(
+        stderr(&patch).contains("suggest a minor release"),
+        "{}",
+        stderr(&patch)
+    );
+    assert_ok(&minor);
+    assert!(!stderr(&minor).contains("suggest"), "{}", stderr(&minor));
+}
+
+#[test]
+fn merge_commits_do_not_count() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.git(&["switch", "-q", "-c", "topic"]);
+    repo.commit("fix: on a branch");
+    repo.git(&["switch", "-q", "main"]);
+    repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "-m",
+        "feat!: merge topic",
+        "topic",
+    ]);
+
+    let out = repo.kraken(&["patch", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("Changes: 1 fix since v1.2.3"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!stderr(&out).contains("suggest"), "{}", stderr(&out));
 }

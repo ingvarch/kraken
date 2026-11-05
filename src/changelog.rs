@@ -6,15 +6,11 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use semver::Version;
 
+use crate::commit::{Commit, Kind};
 use crate::git::Git;
 use crate::manifest;
 
 pub const FILE: &str = "CHANGELOG.md";
-
-/// Conventional commit types: `feat` and `fix` make entries, the others are left out.
-const TYPES: [&str; 11] = [
-    "feat", "fix", "build", "chore", "ci", "docs", "perf", "refactor", "revert", "style", "test",
-];
 
 macro_rules! kraken_line {
     () => {
@@ -40,29 +36,21 @@ pub enum Setup {
     Ready,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Commit {
-    pub subject: String,
-    pub body: String,
-}
-
 /// What a release adds to the changelog: the commits since the latest tag, oldest first.
 pub struct Changes {
-    /// `YYYY-MM-DD`.
-    pub date: String,
     pub commits: Vec<Commit>,
 }
 
 impl Changes {
-    /// The section for `version`.
-    pub fn section(&self, version: &Version) -> Section {
+    /// The section for `version`, dated `date` (`YYYY-MM-DD`).
+    pub fn section(&self, version: &Version, date: String) -> Section {
         let mut groups: BTreeMap<Group, Vec<Entry>> = BTreeMap::new();
         for (group, entry) in self.commits.iter().filter_map(entry) {
             groups.entry(group).or_default().push(entry);
         }
         Section {
             version: version.clone(),
-            date: self.date.clone(),
+            date,
             groups: groups.into_iter().collect(),
         }
     }
@@ -121,65 +109,24 @@ impl Group {
 
 /// The group and entry of `commit`; `None` leaves it out.
 fn entry(commit: &Commit) -> Option<(Group, Entry)> {
-    let Some(header) = Header::parse(&commit.subject) else {
-        let entry = Entry {
+    let group = match commit.kind() {
+        Kind::Breaking => Group::Breaking,
+        Kind::Feature => Group::Added,
+        Kind::Fix => Group::Fixed,
+        Kind::LeftOut => return None,
+        Kind::Unconventional => Group::Changed,
+    };
+    let entry = match commit.header() {
+        Some(header) => Entry {
+            scope: header.scope.map(str::to_string),
+            text: header.description.to_string(),
+        },
+        None => Entry {
             scope: None,
             text: commit.subject.trim().to_string(),
-        };
-        return Some((Group::Changed, entry));
-    };
-    let group = if header.breaking || has_breaking_footer(&commit.body) {
-        Group::Breaking
-    } else {
-        match header.kind.to_ascii_lowercase().as_str() {
-            "feat" => Group::Added,
-            "fix" => Group::Fixed,
-            _ => return None,
-        }
-    };
-    let entry = Entry {
-        scope: header.scope.map(str::to_string),
-        text: header.description.to_string(),
+        },
     };
     Some((group, entry))
-}
-
-/// A conventional commit subject: `type(scope)!: description`.
-struct Header<'a> {
-    kind: &'a str,
-    scope: Option<&'a str>,
-    breaking: bool,
-    description: &'a str,
-}
-
-impl Header<'_> {
-    fn parse(subject: &str) -> Option<Header<'_>> {
-        let (prefix, description) = subject.split_once(": ")?;
-        let description = description.trim();
-        let (prefix, breaking) = match prefix.strip_suffix('!') {
-            Some(prefix) => (prefix, true),
-            None => (prefix, false),
-        };
-        let (kind, scope) = match prefix.split_once('(') {
-            Some((kind, rest)) => (kind, Some(rest.strip_suffix(')')?.trim())),
-            None => (prefix, None),
-        };
-        let known = TYPES.iter().any(|known| known.eq_ignore_ascii_case(kind));
-        if !known || description.is_empty() || scope.is_some_and(|s| s.contains(')')) {
-            return None;
-        }
-        Some(Header {
-            kind,
-            scope: scope.filter(|scope| !scope.is_empty()),
-            breaking,
-            description,
-        })
-    }
-}
-
-fn has_breaking_footer(body: &str) -> bool {
-    body.lines()
-        .any(|line| line.starts_with("BREAKING CHANGE:") || line.starts_with("BREAKING-CHANGE:"))
 }
 
 /// `changelog` with `section` above the latest release and below an Unreleased section,
@@ -319,11 +266,10 @@ mod tests {
     }
 
     fn section(commits: Vec<Commit>) -> String {
-        let changes = Changes {
-            date: "2026-11-04".to_string(),
-            commits,
-        };
-        changes.section(&Version::new(1, 5, 0)).markdown()
+        let changes = Changes { commits };
+        changes
+            .section(&Version::new(1, 5, 0), "2026-11-04".to_string())
+            .markdown()
     }
 
     #[test]
