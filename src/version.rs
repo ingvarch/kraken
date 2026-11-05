@@ -5,7 +5,7 @@ use semver::Version;
 
 use crate::commit::Tally;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
     Patch,
     Minor,

@@ -127,6 +127,11 @@ impl Release {
         suggest(&self.current, &self.tally())
     }
 
+    /// The suggested level; fails when there are no commits to take it from.
+    pub fn auto_level(&self) -> Result<Level> {
+        auto_level(&self.current, &self.tally(), self.latest_tag())
+    }
+
     pub fn latest_tag(&self) -> Option<&str> {
         self.latest.as_ref().map(|(tag, _)| tag.as_str())
     }
@@ -317,6 +322,16 @@ impl Release {
     }
 }
 
+/// The level the commits call for, or an error when there are none.
+pub fn auto_level(current: &Version, tally: &Tally, since: Option<&str>) -> Result<Level> {
+    suggest(current, tally).with_context(|| {
+        format!(
+            "no commits since {}; nothing to release",
+            since.unwrap_or("the first commit")
+        )
+    })
+}
+
 /// "main and v1.2.4 to origin", naming the remote branch when it differs; `None` without origin.
 pub fn push_target(branch: &str, remote_branch: Option<&str>, tag: &str) -> Option<String> {
     let remote_branch = remote_branch?;
@@ -410,6 +425,27 @@ mod tests {
             lock: None,
             version: Version::parse(version).unwrap(),
         }
+    }
+
+    #[test]
+    fn auto_level_follows_the_commits() {
+        let tally = Tally {
+            features: 1,
+            ..Tally::default()
+        };
+
+        let level = auto_level(&Version::new(1, 4, 2), &tally, Some("v1.4.2")).unwrap();
+
+        assert_eq!(level, Level::Minor);
+    }
+
+    #[test]
+    fn auto_level_refuses_without_commits() {
+        let err = auto_level(&Version::new(1, 4, 2), &Tally::default(), Some("v1.4.2"))
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(err, "no commits since v1.4.2; nothing to release");
     }
 
     #[test]

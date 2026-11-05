@@ -1990,3 +1990,195 @@ fn merge_commits_do_not_count() {
     );
     assert!(!stderr(&out).contains("suggest"), "{}", stderr(&out));
 }
+
+#[test]
+fn auto_releases_minor_for_a_feature() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    repo.commit("fix: b");
+
+    let out = repo.kraken(&["auto", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("package.json"),
+        PACKAGE_JSON.replace("1.2.3", "1.3.0")
+    );
+    assert_eq!(repo.tag_commit("v1.3.0"), repo.head());
+    assert!(stdout(&out).contains("Level: minor\n"), "{}", stdout(&out));
+}
+
+#[test]
+fn auto_releases_major_for_a_breaking_change() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat(cli)!: rename a flag");
+
+    assert_ok(&repo.kraken(&["auto", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v1.2.3", "v2.0.0"]);
+}
+
+#[test]
+fn auto_reads_the_breaking_change_footer() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a\n\nBREAKING CHANGE: the flag is gone");
+
+    assert_ok(&repo.kraken(&["auto", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v1.2.3", "v2.0.0"]);
+}
+
+#[test]
+fn auto_releases_minor_for_a_breaking_change_in_0x() {
+    let repo = Repo::new();
+    repo.write("Cargo.toml", CARGO_TOML);
+    repo.write("Cargo.lock", CARGO_LOCK);
+    repo.write("src/lib.rs", "");
+    repo.commit_all();
+    repo.git(&["tag", "v0.1.0"]);
+    repo.commit("feat!: a");
+
+    let out = repo.kraken(&["auto", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.tags(), ["v0.1.0", "v0.2.0"]);
+    assert!(
+        stdout(&out).contains("Level: minor (breaking changes bump minor in 0.x)\n"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn auto_releases_patch_for_fixes_and_other_commits() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("fix: a");
+    repo.commit("docs: b");
+    repo.commit("Update README");
+
+    let out = repo.kraken(&["auto", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.tags(), ["v1.2.3", "v1.2.4"]);
+    assert!(stdout(&out).contains("Level: patch\n"), "{}", stdout(&out));
+}
+
+#[test]
+fn auto_counts_every_commit_on_the_first_release() {
+    let repo = Repo::new();
+    repo.write("go.mod", "module demo\n");
+    repo.commit_all();
+    repo.commit("feat: serve over https");
+
+    assert_ok(&repo.kraken(&["auto", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v0.1.0"]);
+}
+
+#[test]
+fn auto_refuses_without_new_commits() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    let head = repo.head();
+
+    let out = repo.kraken(&["auto", "--yes"]);
+
+    assert_failed_with(&out, "error: no commits since v1.2.3; nothing to release");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tags(), ["v1.2.3"]);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn auto_refuses_before_asking_origin() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.git(&["remote", "add", "origin", "/nonexistent/origin"]);
+
+    let out = repo.kraken(&["auto", "--yes"]);
+
+    assert_failed_with(&out, "nothing to release");
+    assert!(
+        !stdout(&out).contains("Checking tags on origin"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        !stderr(&out).contains("could not compare tags with origin"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn auto_dry_run_shows_the_level_and_changes_nothing() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    let head = repo.head();
+
+    let out = repo.kraken(&["auto", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(stdout(&out).contains("Level: minor\n"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("  tag v1.3.0\n"), "{}", stdout(&out));
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tags(), ["v1.2.3"]);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn auto_levels_line_follows_the_changes_line() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+
+    let out = repo.kraken(&["auto", "--dry-run", "--no-changelog"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("Changes: 1 feature since v1.2.3\nLevel: minor\n"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn auto_writes_the_same_changelog_section() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: add a command");
+
+    assert_ok(&repo.kraken_dated(&["auto", "--yes"]));
+
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!("{TEMPLATE}\n## [1.3.0] - 2026-11-04\n\n### Added\n\n- add a command\n")
+    );
+}
+
+#[test]
+fn missing_level_names_auto() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+
+    assert_failed_with(&repo.kraken(&[]), "pass patch, minor, major or auto");
+}
+
+#[test]
+fn help_lists_auto() {
+    let repo = Repo::new();
+
+    let out = repo.kraken(&["--help"]);
+
+    assert!(
+        stdout(&out).contains("[possible values: patch, minor, major, auto]"),
+        "{}",
+        stdout(&out)
+    );
+}
