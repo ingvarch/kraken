@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
+use crate::changelog::Commit;
 use crate::cmd;
 
 pub struct Git {
@@ -58,6 +59,32 @@ impl Git {
     pub fn merged_tags(&self) -> Result<Vec<String>> {
         let list = self.run(&["tag", "--list", "--merged", "HEAD"])?;
         Ok(list.lines().map(str::to_string).collect())
+    }
+
+    /// Commits after `tag` up to HEAD, oldest first and without merges; every commit without `tag`.
+    pub fn commits_since(&self, tag: Option<&str>) -> Result<Vec<Commit>> {
+        let range = tag.map_or("HEAD".to_string(), |tag| format!("refs/tags/{tag}..HEAD"));
+        let log = self.run(&[
+            "log",
+            "--no-show-signature",
+            "--no-merges",
+            "--reverse",
+            "--format=%s%x00%b%x1e",
+            &range,
+        ])?;
+        Ok(log
+            .split('\x1e')
+            .filter_map(|record| record.trim_start().split_once('\0'))
+            .map(|(subject, body)| Commit {
+                subject: subject.to_string(),
+                body: body.trim().to_string(),
+            })
+            .collect())
+    }
+
+    /// The name, email, time and time zone the next commit gets.
+    pub fn committer_ident(&self) -> Result<String> {
+        self.run(&["var", "GIT_COMMITTER_IDENT"])
     }
 
     pub fn tags(&self) -> Result<Vec<String>> {

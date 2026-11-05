@@ -179,7 +179,7 @@ pub fn detect(root: &Path, is_ignored: impl Fn(&str) -> Result<bool>) -> Result<
 }
 
 /// `name` when `root` has a regular file with exactly that name, whatever the file system's case rules.
-fn existing(root: &Path, name: &str) -> Option<String> {
+pub(crate) fn existing(root: &Path, name: &str) -> Option<String> {
     fs::read_dir(root)
         .ok()?
         .flatten()

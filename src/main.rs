@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
+use kraken::changelog;
 use kraken::release::{Current, Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
 use kraken::version::Level;
@@ -36,6 +37,8 @@ struct Cli {
 enum Command {
     /// Print the project's current version and change nothing
     Version,
+    /// Create CHANGELOG.md, which every release then adds a section to
+    Changelog,
 }
 
 fn main() -> ExitCode {
@@ -49,8 +52,10 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: &Cli) -> Result<()> {
-    if let Some(Command::Version) = cli.command {
-        return print_version();
+    match cli.command {
+        Some(Command::Version) => return print_version(),
+        Some(Command::Changelog) => return create_changelog(),
+        None => {}
     }
     let release = Release::prepare(&std::env::current_dir()?)?;
     if opens_panel(cli, io::stdin().is_terminal(), io::stdout().is_terminal()) {
@@ -85,6 +90,15 @@ fn print_version() -> Result<()> {
         eprintln!("warning: {warning}");
     }
     println!("{}", current.version);
+    Ok(())
+}
+
+fn create_changelog() -> Result<()> {
+    changelog::create(&std::env::current_dir()?)?;
+    println!(
+        "Created {}. Commit it, and every release adds a section to it.",
+        changelog::FILE
+    );
     Ok(())
 }
 
@@ -218,6 +232,16 @@ fn print_dry_run(release: &Release, plan: &Plan) {
     println!("  tag {}", plan.tag);
     if let Some(push) = push_of(release, plan) {
         println!("  push {push}");
+    }
+    if let Some(section) = &plan.changelog {
+        println!("  add to {}:\n", changelog::FILE);
+        for line in section.markdown().lines() {
+            if line.is_empty() {
+                println!();
+            } else {
+                println!("    {line}");
+            }
+        }
     }
     print_untracked(plan);
 }

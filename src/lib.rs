@@ -1,3 +1,4 @@
+pub mod changelog;
 mod cmd;
 mod git;
 pub mod manifest;
