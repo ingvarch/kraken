@@ -13,7 +13,7 @@ kraken releases a project in one command: it bumps the version, commits, tags an
 - Changes only the version string: comments, quotes and formatting stay
 - Sets the project's own entry in `package-lock.json`, `Cargo.lock` or `uv.lock`, with no network
 - Refuses a dirty tree, a shallow clone, tags on origin you have not fetched and a version that is not above the latest tag
-- Adds a section to `CHANGELOG.md` from the commits since the last tag; `kraken changelog` creates the file
+- Adds a section to `CHANGELOG.md` from the commits since the last tag. `kraken changelog` creates the file with a line that turns this on; an existing changelog needs that line added
 - Commits, creates an annotated tag and pushes the branch and the tag in one atomic push
 - Puts HEAD and the files back if anything fails before the tag
 - A full-screen panel for releases by hand, `--yes` and `--dry-run` for scripts

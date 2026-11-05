@@ -23,7 +23,7 @@ pub struct Release {
     pub branch: String,
     /// The branch on origin to push to; `None` without an origin remote.
     pub remote_branch: Option<String>,
-    /// What goes into the changelog; `None` without CHANGELOG.md.
+    /// What goes into the changelog; `None` when the release leaves CHANGELOG.md alone.
     changes: Option<Changes>,
 }
 
@@ -80,7 +80,7 @@ pub struct Plan {
 }
 
 impl Release {
-    pub fn prepare(dir: &Path) -> Result<Release> {
+    pub fn prepare(dir: &Path, with_changelog: bool) -> Result<Release> {
         let git = Git::discover(dir)?;
         let head = git.head()?;
         let branch = git.branch()?;
@@ -95,7 +95,7 @@ impl Release {
             git.upstream(&branch, ORIGIN)
                 .unwrap_or_else(|| branch.clone())
         });
-        let changes = if changelog::is_in(git.root()) {
+        let changes = if with_changelog && changelog::is_on(git.root())? {
             let tag = latest.as_ref().map(|(tag, _)| tag.as_str());
             Some(Changes {
                 date: changelog::ident_date(&git.committer_ident()?)?,

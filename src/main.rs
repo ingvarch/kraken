@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
-use kraken::changelog;
+use kraken::changelog::{self, Setup};
 use kraken::release::{Current, Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
 use kraken::version::Level;
@@ -31,6 +31,10 @@ struct Cli {
     /// Show what would happen and change nothing
     #[arg(long, requires = "level")]
     dry_run: bool,
+
+    /// Leave CHANGELOG.md out of this release
+    #[arg(long)]
+    no_changelog: bool,
 }
 
 #[derive(Subcommand)]
@@ -57,7 +61,7 @@ fn run(cli: &Cli) -> Result<()> {
         Some(Command::Changelog) => return create_changelog(),
         None => {}
     }
-    let release = Release::prepare(&std::env::current_dir()?)?;
+    let release = Release::prepare(&std::env::current_dir()?, !cli.no_changelog)?;
     if opens_panel(cli, io::stdin().is_terminal(), io::stdout().is_terminal()) {
         return release_in_panel(&release, cli.level);
     }
@@ -94,11 +98,15 @@ fn print_version() -> Result<()> {
 }
 
 fn create_changelog() -> Result<()> {
-    changelog::create(&std::env::current_dir()?)?;
-    println!(
-        "Created {}. Commit it, and every release adds a section to it.",
-        changelog::FILE
-    );
+    let file = changelog::FILE;
+    match changelog::create(&std::env::current_dir()?)? {
+        Setup::Created => {
+            println!("Created {file}. Commit it, and every release adds a section to it.")
+        }
+        Setup::Ready => println!(
+            "{file} has the kraken line. Once it is committed, every release adds a section to it."
+        ),
+    }
     Ok(())
 }
 
