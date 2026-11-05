@@ -8,6 +8,7 @@ use ratatui::{DefaultTerminal, Frame};
 use semver::Version;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::changelog::Section;
 use crate::release::{Plan, push_target};
 use crate::version::{Level, bump};
 
@@ -38,7 +39,7 @@ pub struct Choice {
 pub enum Action {
     None,
     Quit,
-    Release { plan: Plan, push: bool },
+    Release { plan: Box<Plan>, push: bool },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -98,7 +99,7 @@ impl App {
                 KeyCode::Enter => {
                     if let Ok(plan) = &self.choices[self.selected].plan {
                         return Action::Release {
-                            plan: plan.clone(),
+                            plan: Box::new(plan.clone()),
                             push: self.push && self.facts.remote_branch.is_some(),
                         };
                     }
@@ -113,7 +114,7 @@ impl App {
     /// only keys that leave are let through, so nothing is released unseen.
     pub fn accepts(&self, key: KeyEvent, size: Size) -> bool {
         let leaving = is_ctrl_c(&key) || matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
-        let (body, _) = self.content(text_width(size.width) as usize);
+        let (body, _) = self.content(text_width(size.width) as usize, body_room(size.height));
         leaving || fits(size, panel_height(&body))
     }
 
@@ -121,7 +122,7 @@ impl App {
         let area = frame.area();
         let width = area.width.min(MAX_WIDTH);
         let text_width = text_width(area.width);
-        let (body, hints) = self.content(text_width as usize);
+        let (body, hints) = self.content(text_width as usize, body_room(area.height));
         let height = panel_height(&body);
         if !fits(area.as_size(), height) {
             let message = format!(
@@ -147,7 +148,10 @@ impl App {
             width: text_width,
             height,
         };
-        frame.render_widget(Paragraph::new(body), text(panel.y + 2, height - 6));
+        frame.render_widget(
+            Paragraph::new(body),
+            text(panel.y + 2, height - FRAME_HEIGHT),
+        );
 
         let separator = panel.bottom() - 3;
         let buffer = frame.buffer_mut();
@@ -159,7 +163,8 @@ impl App {
         frame.render_widget(Paragraph::new(hints), text(separator + 1, 1));
     }
 
-    fn content(&self, width: usize) -> (Vec<Line<'static>>, Line<'static>) {
+    /// The body is at most `room` lines when it can be; only the changelog gets shorter.
+    fn content(&self, width: usize, room: usize) -> (Vec<Line<'static>>, Line<'static>) {
         let mut lines = self.facts_lines(width);
         lines.push(Line::default());
         let hints = match self.screen {
@@ -167,7 +172,7 @@ impl App {
                 self.choose_lines(&mut lines);
                 hints(&[("↑↓", "choose"), ("enter", "continue"), ("esc", "quit")])
             }
-            Screen::Confirm => self.confirm_lines(&mut lines, width),
+            Screen::Confirm => self.confirm_lines(&mut lines, width, room),
         };
         (lines, hints)
     }
@@ -223,7 +228,12 @@ impl App {
         }
     }
 
-    fn confirm_lines(&self, lines: &mut Vec<Line<'static>>, width: usize) -> Line<'static> {
+    fn confirm_lines(
+        &self,
+        lines: &mut Vec<Line<'static>>,
+        width: usize,
+        room: usize,
+    ) -> Line<'static> {
         let choice = &self.choices[self.selected];
         let plan = match &choice.plan {
             Ok(plan) => plan,
@@ -274,6 +284,10 @@ impl App {
                     .map(|line| Line::from(line).dim()),
             );
         }
+        if let Some(section) = &plan.changelog {
+            let room = room.saturating_sub(lines.len());
+            lines.extend(changelog_lines(section, width, room));
+        }
         if self.facts.remote_branch.is_some() {
             hints(&[
                 ("enter", "release"),
@@ -292,6 +306,36 @@ impl App {
             &plan.tag,
         )
     }
+}
+
+/// The changelog section in at most `room` lines, or nothing when it has no room.
+fn changelog_lines(section: &Section, width: usize, room: usize) -> Vec<Line<'static>> {
+    // A blank line and the heading come first.
+    let Some(room) = room.checked_sub(2).filter(|&room| room > 0) else {
+        return Vec::new();
+    };
+    let mut body = Vec::new();
+    for (group, entries) in &section.groups {
+        for (index, entry) in entries.iter().enumerate() {
+            let key = if index == 0 { group.title() } else { "" };
+            let text = match &entry.scope {
+                Some(scope) => format!("{scope}: {}", entry.text),
+                None => entry.text.clone(),
+            };
+            body.extend(row(key, &text, width, Style::new()));
+        }
+    }
+    if body.is_empty() {
+        body.push(Line::from("Only the version heading, no entries").dim());
+    }
+    if body.len() > room {
+        let cut = body.len() - (room - 1);
+        body.truncate(room - 1);
+        body.push(Line::from(format!("… {cut} more lines")).dim());
+    }
+    let mut lines = vec![Line::default(), Line::from("Changelog").bold()];
+    lines.extend(body);
+    lines
 }
 
 /// The kraken that rises when a release heads for origin.
@@ -336,7 +380,7 @@ pub fn run(terminal: &mut DefaultTerminal, mut app: App) -> Result<Option<(Plan,
         match app.handle_key(key) {
             Action::None => {}
             Action::Quit => return Ok(None),
-            Action::Release { plan, push } => return Ok(Some((plan, push))),
+            Action::Release { plan, push } => return Ok(Some((*plan, push))),
         }
     }
 }
@@ -350,9 +394,16 @@ fn text_width(terminal_width: u16) -> u16 {
     terminal_width.min(MAX_WIDTH).saturating_sub(6)
 }
 
-/// Border, padding, body, padding, separator, hints, border.
+/// Rows around the body: border, padding, padding, separator, hints, border.
+const FRAME_HEIGHT: u16 = 6;
+
 fn panel_height(body: &[Line]) -> u16 {
-    body.len() as u16 + 6
+    body.len() as u16 + FRAME_HEIGHT
+}
+
+/// Body lines a panel in a terminal `terminal_height` tall has room for.
+fn body_room(terminal_height: u16) -> usize {
+    terminal_height.saturating_sub(FRAME_HEIGHT) as usize
 }
 
 fn fits(size: Size, panel_height: u16) -> bool {
@@ -438,6 +489,8 @@ mod tests {
     use ratatui::layout::Size;
     use ratatui::style::Color;
 
+    use crate::changelog::{Entry, Group};
+
     fn v(text: &str) -> Version {
         Version::parse(text).unwrap()
     }
@@ -461,6 +514,7 @@ mod tests {
             tag,
             files: vec!["package.json".to_string(), "package-lock.json".to_string()],
             untracked: vec![],
+            changelog: None,
         }
     }
 
@@ -653,7 +707,7 @@ mod tests {
         assert_eq!(
             action,
             Action::Release {
-                plan: plan("1.2.4"),
+                plan: Box::new(plan("1.2.4")),
                 push: false
             }
         );
@@ -679,7 +733,7 @@ mod tests {
         assert_eq!(
             action,
             Action::Release {
-                plan: plan("1.2.4"),
+                plan: Box::new(plan("1.2.4")),
                 push: false
             }
         );
@@ -806,6 +860,116 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         format!("push failed: ! [rejected] main -> main (fetch first)\n{hints}")
+    }
+
+    fn entry(scope: Option<&str>, text: &str) -> Entry {
+        Entry {
+            scope: scope.map(str::to_string),
+            text: text.to_string(),
+        }
+    }
+
+    fn with_changelog(groups: Vec<(Group, Vec<Entry>)>) -> Vec<Choice> {
+        let mut choices = choices();
+        for choice in &mut choices {
+            if let Ok(plan) = &mut choice.plan {
+                plan.changelog = Some(Section {
+                    version: plan.version.clone(),
+                    date: "2026-11-04".to_string(),
+                    groups: groups.clone(),
+                });
+            }
+        }
+        choices
+    }
+
+    fn long_changelog() -> Vec<Choice> {
+        let entries = (1..=40)
+            .map(|n| entry(None, &format!("change {n}")))
+            .collect();
+        with_changelog(vec![(Group::Changed, entries)])
+    }
+
+    #[test]
+    fn confirmation_shows_the_changelog_section() {
+        let choices = with_changelog(vec![
+            (
+                Group::Added,
+                vec![
+                    entry(Some("ui"), "add the release panel"),
+                    entry(None, "read gradle.properties"),
+                ],
+            ),
+            (
+                Group::Fixed,
+                vec![entry(None, "keep comments in deno.jsonc")],
+            ),
+        ]);
+        let mut app = App::new(facts(), choices, None);
+        press(&mut app, KeyCode::Enter);
+
+        assert_shows(&app, "Changelog");
+        assert_shows(&app, "Added     ui: add the release panel");
+        assert_shows(&app, "          read gradle.properties");
+        assert_shows(&app, "Fixed     keep comments in deno.jsonc");
+    }
+
+    #[test]
+    fn says_when_the_changelog_section_has_no_entries() {
+        let mut app = App::new(facts(), with_changelog(vec![]), None);
+        press(&mut app, KeyCode::Enter);
+
+        assert_shows(&app, "Only the version heading, no entries");
+    }
+
+    #[test]
+    fn no_changelog_section_without_a_changelog() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+
+        assert_hides(&app, "Changelog");
+    }
+
+    #[test]
+    fn long_changelog_is_cut_to_fit_the_terminal() {
+        let mut app = App::new(facts(), long_changelog(), None);
+        press(&mut app, KeyCode::Enter);
+
+        assert_hides(&app, "too small");
+        assert_shows(&app, "enter release");
+        assert_shows(&app, "Changed   change 1");
+        assert_shows(&app, "… 33 more lines");
+        assert_hides(&app, "change 40");
+    }
+
+    #[test]
+    fn changelog_needs_room_for_its_heading_and_a_line() {
+        let section = Section {
+            version: v("1.3.0"),
+            date: "2026-11-04".to_string(),
+            groups: vec![(Group::Added, vec![entry(None, "a"), entry(None, "b")])],
+        };
+        let text = |room| -> Vec<String> {
+            changelog_lines(&section, 50, room)
+                .iter()
+                .map(Line::to_string)
+                .collect()
+        };
+
+        assert!(text(2).is_empty());
+        assert_eq!(text(3), ["", "Changelog", "… 2 more lines"]);
+        assert_eq!(text(4), ["", "Changelog", "Added     a", "          b"]);
+    }
+
+    #[test]
+    fn changelog_gives_way_to_warnings() {
+        let mut facts = facts();
+        facts.warnings = vec![git_rejection(), git_rejection()];
+        let mut app = App::new(facts, long_changelog(), None);
+        press(&mut app, KeyCode::Enter);
+
+        assert_hides(&app, "too small");
+        assert_shows(&app, "enter release");
     }
 
     #[test]

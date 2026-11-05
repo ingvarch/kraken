@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use semver::Version;
 
+use crate::changelog::{self, Changes, Section};
 use crate::git::Git;
 use crate::manifest::{self, Manifest};
 use crate::version::{Level, bump, latest_release_tag, release_tag_version};
@@ -22,6 +23,8 @@ pub struct Release {
     pub branch: String,
     /// The branch on origin to push to; `None` without an origin remote.
     pub remote_branch: Option<String>,
+    /// What goes into the changelog; `None` without CHANGELOG.md.
+    changes: Option<Changes>,
 }
 
 /// The version kraken releases from, read without changing or fetching anything.
@@ -70,8 +73,10 @@ pub struct Plan {
     pub files: Vec<String>,
     /// Rewritten files that git does not track; they stay out of the commit.
     pub untracked: Vec<String>,
-    /// Commit message; `None` when there are no version files and only HEAD gets tagged.
+    /// Commit message; `None` when there are no files to change and only HEAD gets tagged.
     pub commit: Option<String>,
+    /// The section CHANGELOG.md gets; `None` without CHANGELOG.md.
+    pub changelog: Option<Section>,
 }
 
 impl Release {
@@ -90,6 +95,15 @@ impl Release {
             git.upstream(&branch, ORIGIN)
                 .unwrap_or_else(|| branch.clone())
         });
+        let changes = if changelog::is_in(git.root()) {
+            let tag = latest.as_ref().map(|(tag, _)| tag.as_str());
+            Some(Changes {
+                date: changelog::ident_date(&git.committer_ident()?)?,
+                commits: git.commits_since(tag)?,
+            })
+        } else {
+            None
+        };
         Ok(Release {
             git,
             manifests,
@@ -98,6 +112,7 @@ impl Release {
             head,
             branch,
             remote_branch,
+            changes,
         })
     }
 
@@ -147,6 +162,13 @@ impl Release {
             files.push(manifest.path.clone());
             files.extend(manifest.lock.clone());
         }
+        let section = self
+            .changes
+            .as_ref()
+            .map(|changes| changes.section(&version));
+        if section.is_some() {
+            files.push(changelog::FILE.to_string());
+        }
         let file_refs: Vec<&str> = files.iter().map(String::as_str).collect();
         let tracked = self.git.tracked(&file_refs)?;
         let untracked: Vec<String> = files
@@ -154,12 +176,16 @@ impl Release {
             .filter(|file| !tracked.contains(file))
             .cloned()
             .collect();
-        if let Some(manifest) = self
+        let changelog_file = section.is_some().then_some(changelog::FILE);
+        let mut required = self
             .manifests
             .iter()
-            .find(|manifest| untracked.contains(&manifest.path))
+            .map(|manifest| manifest.path.as_str())
+            .chain(changelog_file);
+        if let Some(file) =
+            required.find(|file| untracked.iter().any(|untracked| untracked == file))
         {
-            bail!("{} is not tracked by git; commit it first", manifest.path);
+            bail!("{file} is not tracked by git; commit it first");
         }
 
         let commit = (!files.is_empty()).then(|| format!("chore(release): {tag}"));
@@ -169,6 +195,7 @@ impl Release {
             files,
             untracked,
             commit,
+            changelog: section,
         })
     }
 
@@ -235,6 +262,10 @@ impl Release {
                     .with_context(|| lock.clone())?;
                 fs::write(root.join(lock), text).with_context(|| lock.clone())?;
             }
+        }
+        if let Some(section) = &plan.changelog {
+            let text = changelog::insert(&originals[changelog::FILE], &section.markdown());
+            fs::write(root.join(changelog::FILE), text).context(changelog::FILE)?;
         }
         Ok(())
     }

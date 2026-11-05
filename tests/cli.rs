@@ -17,6 +17,8 @@ const PACKAGE_LOCK: &str = r#"{
 "#;
 const CARGO_TOML: &str = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n";
 const CARGO_LOCK: &str = "version = 4\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\n";
+const TEMPLATE: &str = kraken::changelog::TEMPLATE;
+const RELEASED_AT: &str = "2026-11-04T12:00:00+0000";
 
 /// Keeps the user's git config (signing, hooks, identity) out of the tests.
 fn isolate(cmd: &mut Command) -> &mut Command {
@@ -145,6 +147,26 @@ impl Repo {
         self.write("package.json", PACKAGE_JSON);
         self.write("package-lock.json", PACKAGE_LOCK);
         self.commit_all();
+    }
+
+    fn commit(&self, message: &str) {
+        self.git(&["commit", "-q", "--allow-empty", "-m", message]);
+    }
+
+    /// Runs kraken with the date the release commit gets fixed to [`RELEASED_AT`].
+    fn kraken_dated(&self, args: &[&str]) -> Output {
+        isolate(Command::new(env!("CARGO_BIN_EXE_kraken")).args(args))
+            .env("GIT_COMMITTER_DATE", RELEASED_AT)
+            .current_dir(self.path())
+            .output()
+            .unwrap()
+    }
+
+    /// A Node project at v1.2.3 with a committed CHANGELOG.md.
+    fn node_with_changelog(&self) {
+        self.write("CHANGELOG.md", TEMPLATE);
+        self.node();
+        self.git(&["tag", "v1.2.3"]);
     }
 
     fn add_origin(&self, origin: &TempDir) {
@@ -1261,4 +1283,296 @@ fn dash_dash_version_still_prints_kraken_version() {
         stdout(&out),
         format!("kraken {}\n", env!("CARGO_PKG_VERSION"))
     );
+}
+
+#[test]
+fn changelog_creates_the_file() {
+    let repo = Repo::new();
+    repo.node();
+
+    let out = repo.kraken(&["changelog"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert!(
+        stdout(&out).contains("Created CHANGELOG.md"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(repo.status(), "?? CHANGELOG.md");
+}
+
+#[test]
+fn changelog_goes_to_the_repository_root() {
+    let repo = Repo::new();
+    repo.write("src/index.js", "");
+    repo.node();
+
+    assert_ok(&kraken_in(&repo.path().join("src"), &["changelog"]));
+
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+}
+
+#[test]
+fn changelog_keeps_an_existing_file() {
+    let repo = Repo::new();
+    repo.node();
+    repo.write("CHANGELOG.md", "mine\n");
+
+    assert_failed_with(&repo.kraken(&["changelog"]), "CHANGELOG.md already exists");
+
+    assert_eq!(repo.read("CHANGELOG.md"), "mine\n");
+}
+
+#[test]
+fn changelog_refuses_outside_git() {
+    let dir = tempfile::tempdir().unwrap();
+
+    assert_failed_with(
+        &kraken_in(dir.path(), &["changelog"]),
+        "not inside a git repository",
+    );
+
+    assert!(!dir.path().join("CHANGELOG.md").exists());
+}
+
+#[test]
+fn changelog_takes_no_flags() {
+    let repo = Repo::new();
+    repo.node();
+
+    for flag in ["--yes", "--dry-run"] {
+        let out = repo.kraken(&["changelog", flag]);
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+        assert!(stderr(&out).contains("unexpected argument"), "{flag}");
+    }
+}
+
+#[test]
+fn release_adds_the_commits_since_the_latest_tag_to_the_changelog() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat(cli): add a command");
+    repo.commit("fix: handle a crash");
+    repo.commit("docs: explain it");
+
+    assert_ok(&repo.kraken_dated(&["patch", "--yes"]));
+
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!(
+            "{TEMPLATE}\n## [1.2.4] - 2026-11-04\n\n### Added\n\n- **cli**: add a command\n\n### Fixed\n\n- handle a crash\n"
+        )
+    );
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "CHANGELOG.md\npackage-lock.json\npackage.json"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn changelog_section_leaves_out_merge_commits() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.git(&["checkout", "-q", "-b", "topic"]);
+    repo.commit("fix: on a branch");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "-m",
+        "Merge branch 'topic'",
+        "topic",
+    ]);
+
+    assert_ok(&repo.kraken_dated(&["patch", "--yes"]));
+
+    let changelog = repo.read("CHANGELOG.md");
+    assert!(changelog.contains("- on a branch"), "{changelog}");
+    assert!(!changelog.contains("Merge"), "{changelog}");
+}
+
+#[test]
+fn first_release_puts_every_commit_in_the_changelog() {
+    let repo = Repo::new();
+    repo.write("CHANGELOG.md", TEMPLATE);
+    repo.node();
+
+    assert_ok(&repo.kraken_dated(&["patch", "--yes"]));
+
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!("{TEMPLATE}\n## [1.2.4] - 2026-11-04\n\n### Changed\n\n- init\n")
+    );
+}
+
+#[test]
+fn tag_only_release_commits_the_changelog() {
+    let repo = Repo::new();
+    repo.write("main.go", "package main\n");
+    repo.write("CHANGELOG.md", TEMPLATE);
+    repo.commit_all();
+    repo.git(&["tag", "1.0.0"]);
+    repo.commit("feat: serve over https");
+    let head = repo.head();
+
+    assert_ok(&repo.kraken_dated(&["minor", "--yes"]));
+
+    assert_eq!(repo.git(&["rev-parse", "HEAD~1"]), head);
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "chore(release): 1.1.0"
+    );
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "CHANGELOG.md"
+    );
+    assert!(
+        repo.read("CHANGELOG.md")
+            .contains("## [1.1.0] - 2026-11-04")
+    );
+    assert_eq!(repo.tag_commit("1.1.0"), repo.head());
+}
+
+#[test]
+fn changelog_reads_the_body_of_a_commit() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "feat: new config format",
+        "-m",
+        "BREAKING CHANGE: the old format is gone",
+    ]);
+
+    assert_ok(&repo.kraken_dated(&["major", "--yes"]));
+
+    assert!(
+        repo.read("CHANGELOG.md")
+            .contains("## [2.0.0] - 2026-11-04\n\n### Breaking\n\n- new config format\n"),
+        "{}",
+        repo.read("CHANGELOG.md")
+    );
+}
+
+#[test]
+fn changelog_ignores_log_show_signature() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    let key = repo.path().join(".git/signing-key");
+    check(
+        Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", ""])
+            .arg("-f")
+            .arg(&key),
+    );
+    let public = fs::read_to_string(key.with_extension("pub")).unwrap();
+    let signers = repo.path().join(".git/allowed-signers");
+    fs::write(&signers, format!("test@example.com {public}")).unwrap();
+    repo.git(&["config", "gpg.format", "ssh"]);
+    repo.git(&["config", "user.signingkey", key.to_str().unwrap()]);
+    repo.git(&[
+        "config",
+        "gpg.ssh.allowedSignersFile",
+        signers.to_str().unwrap(),
+    ]);
+    repo.git(&["config", "log.showSignature", "true"]);
+    repo.git(&[
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-S",
+        "-m",
+        "feat: add a signed feature",
+    ]);
+
+    let out = repo.kraken_dated(&["minor", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("    ### Added\n\n    - add a signed feature\n"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!stdout(&out).contains("signature"), "{}", stdout(&out));
+}
+
+#[test]
+fn changelog_must_be_named_exactly() {
+    let repo = Repo::new();
+    repo.write("changelog.md", TEMPLATE);
+    repo.node();
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(repo.read("changelog.md"), TEMPLATE);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn symlinked_changelog_is_left_alone() {
+    let repo = Repo::new();
+    repo.write("docs/changelog.md", TEMPLATE);
+    std::os::unix::fs::symlink("docs/changelog.md", repo.path().join("CHANGELOG.md")).unwrap();
+    repo.node();
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(repo.read("docs/changelog.md"), TEMPLATE);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn refuses_untracked_changelog() {
+    let repo = Repo::new();
+    repo.node();
+    repo.write("CHANGELOG.md", TEMPLATE);
+
+    assert_failed_with(
+        &repo.kraken(&["patch", "--yes"]),
+        "CHANGELOG.md is not tracked by git; commit it first",
+    );
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn dry_run_shows_the_changelog_section_and_changes_nothing() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: add a command");
+
+    let out = repo.kraken_dated(&["minor", "--dry-run"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert!(repo.tags().contains(&"v1.2.3".to_string()) && repo.tags().len() == 1);
+    assert!(
+        stdout(&out).contains(
+            "  add to CHANGELOG.md:\n\n    ## [1.3.0] - 2026-11-04\n\n    ### Added\n\n    - add a command\n"
+        ),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn restores_the_changelog_when_commit_fails() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: add a command");
+    let hook = repo.path().join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(!repo.kraken(&["patch", "--yes"]).status.success());
+
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert_eq!(repo.status(), "");
 }
