@@ -72,14 +72,44 @@ impl Git {
 
     /// Commits after `tag` up to HEAD, oldest first and without merges; every commit without `tag`.
     pub fn commits_since(&self, tag: Option<&str>) -> Result<Vec<Commit>> {
-        let range = tag.map_or("HEAD".to_string(), |tag| format!("refs/tags/{tag}..HEAD"));
+        self.log(&tag.map_or("HEAD".to_string(), |tag| format!("refs/tags/{tag}..HEAD")))
+    }
+
+    /// Commits after `below` up to and including `tag`, oldest first and without merges;
+    /// every commit up to `tag` without `below`.
+    pub fn commits_of(&self, below: Option<&str>, tag: &str) -> Result<Vec<Commit>> {
+        self.log(&match below {
+            Some(below) => format!("refs/tags/{below}..refs/tags/{tag}"),
+            None => format!("refs/tags/{tag}"),
+        })
+    }
+
+    /// The tags reachable from HEAD with the `YYYY-MM-DD` date of each: the tagger date of an
+    /// annotated tag, the commit date of a lightweight one or of a tag without a tagger, in the time
+    /// zone of its ident.
+    pub fn merged_tag_dates(&self) -> Result<Vec<(String, String)>> {
+        let list = self.run(&[
+            "for-each-ref",
+            "--merged",
+            "HEAD",
+            "--format=%(refname:lstrip=2)%00%(if)%(creatordate)%(then)%(creatordate:short)%(else)%(*committerdate:short)%(end)",
+            "refs/tags",
+        ])?;
+        Ok(list
+            .lines()
+            .filter_map(|line| line.split_once('\0'))
+            .map(|(tag, date)| (tag.to_string(), date.to_string()))
+            .collect())
+    }
+
+    fn log(&self, range: &str) -> Result<Vec<Commit>> {
         let log = self.run(&[
             "log",
             "--no-show-signature",
             "--no-merges",
             "--reverse",
             "--format=%s%x00%b%x1e",
-            &range,
+            range,
         ])?;
         Ok(log
             .split('\x1e')

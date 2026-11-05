@@ -15,7 +15,7 @@ kraken releases a project in one command: it bumps the version, commits, tags an
 - Releases pre-releases such as `1.4.0-rc.1` with `--pre alpha|beta|rc`, counts them up, and makes the final version when you leave `--pre` out; Python files get `1.4.0rc1`
 - Suggests patch, minor or major from the conventional commits since the latest final release tag and starts the panel on it; `kraken auto --yes` takes it in scripts
 - Refuses a dirty tree, a shallow clone, tags on origin you have not fetched and a version that is not above the latest tag
-- Adds a section to `CHANGELOG.md` from the commits since the latest final release tag, with a compare link when origin is on GitHub, GitLab or Codeberg. `kraken changelog` creates the file with a line that turns this on; an existing changelog needs that line added
+- Adds a section to `CHANGELOG.md` from the commits since the latest final release tag, with a compare link when origin is on GitHub, GitLab or Codeberg. `kraken changelog` creates the file with a section for every past release and the line that turns this on; an existing changelog needs that line added
 - Commits, creates an annotated tag and pushes the branch and the tag in one atomic push
 - Puts HEAD and the files back if anything fails before the tag
 - `kraken undo` removes a release that is not pushed yet

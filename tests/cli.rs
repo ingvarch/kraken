@@ -249,6 +249,39 @@ impl Repo {
             .unwrap()
     }
 
+    fn commit_at(&self, message: &str, date: &str) {
+        check(isolate(
+            Command::new("git")
+                .args(["commit", "-q", "--allow-empty", "-m", message])
+                .env("GIT_COMMITTER_DATE", date)
+                .current_dir(self.path()),
+        ));
+    }
+
+    /// An annotated tag made at `date`.
+    fn tag_at(&self, tag: &str, date: &str) {
+        check(isolate(
+            Command::new("git")
+                .args(["tag", "-a", tag, "-m", tag])
+                .env("GIT_COMMITTER_DATE", date)
+                .current_dir(self.path()),
+        ));
+    }
+
+    fn light_tag(&self, tag: &str) {
+        self.git(&["tag", tag]);
+    }
+
+    /// Three releases: v1.0.0 with `init`, v1.0.1 with only a `docs:` commit, v1.1.0 with a feature.
+    fn three_releases(&self) {
+        self.commit_at("init", "2026-09-01T10:00:00+0000");
+        self.tag_at("v1.0.0", "2026-09-01T10:00:00+0000");
+        self.commit_at("docs: explain it", "2026-09-10T10:00:00+0000");
+        self.tag_at("v1.0.1", "2026-09-20T10:00:00+0000");
+        self.commit_at("feat(cli): add a command", "2026-10-01T10:00:00+0000");
+        self.tag_at("v1.1.0", "2026-10-01T10:00:00+0000");
+    }
+
     fn add_origin(&self, origin: &TempDir) {
         self.git(&["remote", "add", "origin", origin.path().to_str().unwrap()]);
     }
@@ -4636,5 +4669,361 @@ fn undo_names_the_branch_not_origin_head() {
     assert_failed_with(
         &repo.kraken(&["undo", "--yes"]),
         "already on origin/main; kraken",
+    );
+}
+
+const THREE_SECTIONS: &str = "## [1.1.0] - 2026-10-01\n\
+     \n\
+     ### Added\n\
+     \n\
+     - **cli**: add a command\n\
+     \n\
+     ## [1.0.1] - 2026-09-20\n\
+     \n\
+     ## [1.0.0] - 2026-09-01\n\
+     \n\
+     ### Changed\n\
+     \n\
+     - init\n";
+
+#[test]
+fn changelog_fills_in_a_section_for_every_release() {
+    let repo = Repo::new();
+    repo.three_releases();
+
+    let out = repo.kraken(&["changelog"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!("{TEMPLATE}\n{THREE_SECTIONS}")
+    );
+}
+
+#[test]
+fn changelog_says_how_many_releases_it_filled_in() {
+    let repo = Repo::new();
+    repo.commit_at("init", "2026-09-01T10:00:00+0000");
+    repo.tag_at("v1.0.0", "2026-09-01T10:00:00+0000");
+    let out = repo.kraken(&["changelog"]);
+    assert_ok(&out);
+    assert_eq!(
+        stdout(&out),
+        "Created CHANGELOG.md with 1 release. Commit it, and every release adds a section to it.\n"
+    );
+
+    let repo = Repo::new();
+    repo.three_releases();
+    let out = repo.kraken(&["changelog"]);
+    assert_ok(&out);
+    assert_eq!(
+        stdout(&out),
+        "Created CHANGELOG.md with 3 releases. Commit it, and every release adds a section to it.\n"
+    );
+}
+
+#[test]
+fn changelog_gives_the_lowest_tag_every_commit_before_it() {
+    let repo = Repo::new();
+    repo.commit_at("fix: first", "2026-08-01T10:00:00+0000");
+    repo.commit_at("feat: second", "2026-08-02T10:00:00+0000");
+    repo.commit_at("third", "2026-08-03T10:00:00+0000");
+    repo.tag_at("v0.1.0", "2026-08-04T10:00:00+0000");
+
+    assert_ok(&repo.kraken(&["changelog"]));
+
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!(
+            "{TEMPLATE}\n## [0.1.0] - 2026-08-04\n\n### Added\n\n- second\n\n### Changed\n\n- third\n\n### Fixed\n\n- first\n"
+        )
+    );
+}
+
+#[test]
+fn changelog_dates_a_section_by_its_tag() {
+    let repo = Repo::new();
+    repo.commit_at("one", "2026-10-01T10:00:00+0000");
+    repo.tag_at("v1.0.0", "2026-10-03T10:00:00+0000");
+    repo.commit_at("two", "2026-11-04T23:30:00-0500");
+    repo.light_tag("v1.1.0");
+
+    let out = isolate(Command::new(env!("CARGO_BIN_EXE_kraken")).arg("changelog"))
+        .env("TZ", "Asia/Tokyo")
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+
+    assert_ok(&out);
+    let changelog = repo.read("CHANGELOG.md");
+    assert!(
+        changelog.contains("## [1.0.0] - 2026-10-03\n"),
+        "{changelog}"
+    );
+    assert!(
+        changelog.contains("## [1.1.0] - 2026-11-04\n"),
+        "{changelog}"
+    );
+}
+
+#[test]
+fn changelog_history_leaves_out_release_commits_and_merges() {
+    let repo = Repo::new();
+    repo.commit_at("feat: base", "2026-09-01T10:00:00+0000");
+    repo.git(&["checkout", "-q", "-b", "side"]);
+    repo.commit_at("fix: on the side", "2026-09-02T10:00:00+0000");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.commit_at("feat: on main", "2026-09-03T10:00:00+0000");
+    repo.git(&["merge", "-q", "--no-ff", "-m", "Merge the side", "side"]);
+    repo.commit_at("chore(release): v1.1.0", "2026-09-04T10:00:00+0000");
+    repo.tag_at("v1.1.0", "2026-09-04T10:00:00+0000");
+
+    assert_ok(&repo.kraken(&["changelog"]));
+
+    let changelog = repo.read("CHANGELOG.md");
+    assert!(changelog.contains("- on the side"), "{changelog}");
+    assert!(!changelog.contains("Merge the side"), "{changelog}");
+    assert!(!changelog.contains("chore(release)"), "{changelog}");
+    assert!(!changelog.contains("v1.1.0\n"), "{changelog}");
+}
+
+#[test]
+fn changelog_history_skips_tags_that_are_not_releases() {
+    let repo = Repo::new();
+    repo.commit_at("feat: base", "2026-09-01T10:00:00+0000");
+    repo.tag_at("v1.0.0", "2026-09-01T10:00:00+0000");
+    repo.git(&["checkout", "-q", "-b", "elsewhere"]);
+    repo.commit_at("feat: never merged", "2026-09-02T10:00:00+0000");
+    repo.tag_at("v1.0.5", "2026-09-02T10:00:00+0000");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.commit_at("fix: before the candidate", "2026-09-03T10:00:00+0000");
+    repo.tag_at("v1.1.0-rc.1", "2026-09-03T10:00:00+0000");
+    repo.commit_at("fix: after the candidate", "2026-09-04T10:00:00+0000");
+    repo.light_tag("nightly");
+    repo.tag_at("v1.1.0", "2026-09-05T10:00:00+0000");
+
+    assert_ok(&repo.kraken(&["changelog"]));
+
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!(
+            "{TEMPLATE}\n## [1.1.0] - 2026-09-05\n\n### Fixed\n\n- before the candidate\n- after the candidate\n\n## [1.0.0] - 2026-09-01\n\n### Added\n\n- base\n"
+        )
+    );
+}
+
+#[test]
+fn changelog_history_counts_tags_on_merged_branches() {
+    let repo = Repo::new();
+    repo.commit_at("feat: base", "2026-09-01T10:00:00+0000");
+    repo.tag_at("v1.0.0", "2026-09-01T10:00:00+0000");
+    repo.git(&["checkout", "-q", "-b", "maintenance"]);
+    repo.commit_at("fix: backport", "2026-09-02T10:00:00+0000");
+    repo.tag_at("v1.0.1", "2026-09-02T10:00:00+0000");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.commit_at("feat: one", "2026-09-03T10:00:00+0000");
+    repo.tag_at("v1.1.0", "2026-09-03T10:00:00+0000");
+    repo.git(&[
+        "merge",
+        "-q",
+        "--no-ff",
+        "-m",
+        "Merge maintenance",
+        "maintenance",
+    ]);
+    repo.commit_at("feat: two", "2026-09-05T10:00:00+0000");
+    repo.tag_at("v1.2.0", "2026-09-06T10:00:00+0000");
+
+    assert_ok(&repo.kraken(&["changelog"]));
+
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!(
+            "{TEMPLATE}\n\
+             ## [1.2.0] - 2026-09-06\n\n### Added\n\n- two\n\n### Fixed\n\n- backport\n\n\
+             ## [1.1.0] - 2026-09-03\n\n### Added\n\n- one\n\n\
+             ## [1.0.1] - 2026-09-02\n\n### Fixed\n\n- backport\n\n\
+             ## [1.0.0] - 2026-09-01\n\n### Added\n\n- base\n"
+        )
+    );
+}
+
+#[test]
+fn changelog_history_leaves_out_commits_after_the_latest_tag() {
+    let repo = Repo::new();
+    repo.commit_at("feat: released", "2026-09-01T10:00:00+0000");
+    repo.tag_at("v1.0.0", "2026-09-01T10:00:00+0000");
+    repo.commit_at("feat: not released", "2026-09-02T10:00:00+0000");
+
+    assert_ok(&repo.kraken(&["changelog"]));
+
+    let changelog = repo.read("CHANGELOG.md");
+    assert!(changelog.contains("- released"), "{changelog}");
+    assert!(!changelog.contains("not released"), "{changelog}");
+}
+
+#[test]
+fn changelog_without_commits_writes_the_template() {
+    let repo = Repo::new();
+
+    let out = repo.kraken(&["changelog"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert_eq!(
+        stdout(&out),
+        "Created CHANGELOG.md. Commit it, and every release adds a section to it.\n"
+    );
+}
+
+#[test]
+fn changelog_without_release_tags_keeps_the_message() {
+    let repo = Repo::new();
+    repo.commit_at("init", "2026-09-01T10:00:00+0000");
+    repo.light_tag("nightly");
+
+    let out = repo.kraken(&["changelog"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert_eq!(
+        stdout(&out),
+        "Created CHANGELOG.md. Commit it, and every release adds a section to it.\n"
+    );
+}
+
+#[test]
+fn changelog_refuses_a_shallow_clone() {
+    let source = Repo::new();
+    source.three_releases();
+    let (_holder, path) = shallow_clone(&source);
+
+    let out = kraken_in(&path, &["changelog"]);
+
+    assert_failed_with(
+        &out,
+        "error: this is a shallow clone and may miss tags; run `git fetch --unshallow --tags` first",
+    );
+    assert!(!path.join("CHANGELOG.md").exists());
+}
+
+#[test]
+fn changelog_history_dates_a_tag_without_a_tagger_by_its_commit() {
+    let repo = Repo::new();
+    repo.commit_at("init", "2026-09-01T10:00:00+0000");
+    let commit = repo.git(&["rev-parse", "HEAD"]);
+    repo.write(
+        ".git/tagobject",
+        &format!("object {commit}\ntype commit\ntag v1.0.0\n\nv1.0.0\n"),
+    );
+    let tag = repo.git(&[
+        "hash-object",
+        "-t",
+        "tag",
+        "-w",
+        "--literally",
+        ".git/tagobject",
+    ]);
+    repo.git(&["update-ref", "refs/tags/v1.0.0", &tag]);
+
+    let out = repo.kraken(&["changelog"]);
+
+    assert_ok(&out);
+    assert!(
+        repo.read("CHANGELOG.md")
+            .contains("## [1.0.0] - 2026-09-01\n"),
+        "{}",
+        repo.read("CHANGELOG.md")
+    );
+}
+
+#[test]
+fn changelog_in_a_shallow_clone_checks_the_existing_file() {
+    let source = Repo::new();
+    source.write("CHANGELOG.md", TEMPLATE);
+    source.git(&["add", "-A"]);
+    source.commit_at("init", "2026-09-01T10:00:00+0000");
+    let (_holder, path) = shallow_clone(&source);
+
+    let out = kraken_in(&path, &["changelog"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains(
+            "CHANGELOG.md has the kraken line. Once it is committed, every release adds a section to it."
+        ),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        fs::read_to_string(path.join("CHANGELOG.md")).unwrap(),
+        TEMPLATE
+    );
+}
+
+#[test]
+fn changelog_history_does_not_ask_origin() {
+    let repo = Repo::new();
+    repo.three_releases();
+    repo.set_origin("/no/such/place.git");
+
+    let out = repo.kraken(&["changelog"]);
+
+    assert_ok(&out);
+    assert_eq!(stderr(&out), "");
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!("{TEMPLATE}\n{THREE_SECTIONS}")
+    );
+}
+
+#[test]
+fn changelog_history_links_every_release() {
+    let repo = Repo::new();
+    repo.commit_at("init", "2026-09-01T10:00:00+0000");
+    repo.tag_at("1.0.0", "2026-09-01T10:00:00+0000");
+    repo.commit_at("fix: a", "2026-09-02T10:00:00+0000");
+    repo.tag_at("v1.1.0", "2026-09-02T10:00:00+0000");
+    let github = FakeGitHub::new();
+    repo.add_github_origin(&github);
+
+    let out = repo.kraken_on(&github, &["changelog"], "github.com");
+
+    assert_ok(&out);
+    assert!(
+        repo.read("CHANGELOG.md").ends_with(&format!(
+            "\n[1.1.0]: {GH}/compare/1.0.0...v1.1.0\n[1.0.0]: {GH}/releases/tag/1.0.0\n"
+        )),
+        "{}",
+        repo.read("CHANGELOG.md")
+    );
+}
+
+#[test]
+fn release_after_changelog_continues_the_history() {
+    let repo = Repo::new();
+    repo.commit_at("init", "2026-09-01T10:00:00+0000");
+    repo.tag_at("v1.0.0", "2026-09-01T10:00:00+0000");
+    repo.commit_at("fix: a", "2026-09-02T10:00:00+0000");
+    repo.tag_at("v1.0.1", "2026-09-02T10:00:00+0000");
+    let github = FakeGitHub::new();
+    repo.add_github_origin(&github);
+    assert_ok(&repo.kraken_on(&github, &["changelog"], "github.com"));
+    repo.git(&["add", "CHANGELOG.md"]);
+    repo.commit_at("docs: add the changelog", "2026-10-01T10:00:00+0000");
+    repo.commit_at("feat: new thing", "2026-10-02T10:00:00+0000");
+
+    assert_ok(&repo.kraken_on(&github, &["minor", "--yes"], "github.com"));
+
+    let changelog = repo.read("CHANGELOG.md");
+    let at = |text: &str| {
+        changelog
+            .find(text)
+            .unwrap_or_else(|| panic!("{text}\n{changelog}"))
+    };
+    assert!(at("## [1.1.0] - 2026-11-04") < at("## [1.0.1] - 2026-09-02"));
+    assert!(
+        at(&format!("[1.1.0]: {GH}/compare/v1.0.1...v1.1.0"))
+            < at(&format!("[1.0.1]: {GH}/compare/v1.0.0...v1.0.1"))
     );
 }

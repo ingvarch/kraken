@@ -89,7 +89,7 @@ kraken rewrites only the version string; comments, quotes and formatting stay as
 
 ## Changelog
 
-`kraken changelog` creates `CHANGELOG.md` in the repository root with a short header and this line:
+`kraken changelog` creates `CHANGELOG.md` in the repository root with a short header and this line, followed by the past releases, see [The history](#the-history):
 
 ```
 <!-- kraken adds a section for every release. Delete this line to stop it. -->
@@ -120,6 +120,14 @@ The groups come in the order Breaking, Added, Changed, Fixed. An entry is the de
 
 The date is the day kraken starts, in the time zone git gives commits: kraken reads it from `git var GIT_COMMITTER_IDENT`, so `GIT_COMMITTER_DATE` sets it too. kraken puts the section above the first `## ` heading other than `## [Unreleased]`, which in a Keep a Changelog file is the latest release, or at the end of the file, above the link definitions there, when there is no such heading. The rest of the file stays as it is. The panel and `--dry-run` show the section before the release.
 
+### The history
+
+`kraken changelog` writes a section for every past release, so the file is complete from the start. It takes the final release tags that HEAD contains: `X.Y.Z` or `vX.Y.Z`. Pre-release tags, other tags and tags on branches not merged into HEAD get no section. When `1.2.0` and `v1.2.0` both exist, kraken uses the `v` one.
+
+kraken sorts the tags by version. The section of a tag lists the commits after the final tag just below it, up to and including the tagged commit, oldest first and without merge commits. The lowest tag lists every commit up to it. The commits of a pre-release tag go into the next final release. The groups are the ones a release uses, so `chore(release): v1.2.0` is left out. A release with no entries keeps its heading. Commits after the latest tag get no section; the next release adds them.
+
+The date of a section is the date of its tag: the tagger date of an annotated tag, the commit date of a lightweight tag, in the time zone of each. The sections come newest first, below the header and the kraken line. When origin is on a known host, the file ends with a link for every release, see below. The command reads git and changes nothing in it. It needs no clean tree, no branch and no network.
+
 ### Compare links
 
 Keep a Changelog ends the file with link definitions, so each version heading opens the page that compares it with the previous release. When origin is on github.com, gitlab.com or codeberg.org, a release adds the definition for its version above the latest release's one:
@@ -132,7 +140,7 @@ Keep a Changelog ends the file with link definitions, so each version heading op
 
 The link compares the latest final release tag with the new tag, both as they are written, so `v1.3.0` or `1.3.0`. A first release links the tag page. An `[Unreleased]` definition that compares from the previous tag, such as `compare/v1.3.0...HEAD`, moves to the new tag. kraken keeps its label and the part after the tag, and never adds one. A pre-release adds no section, so it adds no link.
 
-The file decides whether it gets links. A file whose link definitions at the end include a version keeps getting them. A file with no release section yet, such as the one `kraken changelog` makes, starts them with its first release. A file with release sections and no version links gets none. To start links in such a file, add the definitions for the past releases, or at least the latest. To stop them, delete the version definitions. `--no-changelog` adds no links.
+The file decides whether it gets links. A file whose link definitions at the end include a version keeps getting them. A file with no release section yet, such as the one `kraken changelog` makes in a repository without final release tags in HEAD, starts them with its first release. A file with release sections and no version links gets none. To start links in such a file, add the definitions for the past releases, or at least the latest. To stop them, delete the version definitions. `--no-changelog` adds no links.
 
 kraken reads the URL origin pushes to, `git remote get-url --push origin`, with `insteadOf` and `pushInsteadOf` applied. It understands HTTPS, `git@host:owner/repo.git` and `ssh://` URLs, with or without `.git`. For an SSH host it runs `ssh -G`, which reads `~/.ssh/config` and connects to nothing, so `git@github-work:o/r.git` with `HostName github.com` gets GitHub links. It builds the address from the host and the path alone. A user name, password, token or port in the URL never reaches the file or the output. The links need no network. `--dry-run` shows the link lines, and a failed release puts the file back with its links as they were.
 

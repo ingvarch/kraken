@@ -14,7 +14,8 @@ What kraken does not support. What it does support is in [how-it-works.md](how-i
 - `kraken undo` removes only the latest release, only at HEAD and only when it is not pushed. It asks only `origin` over the network and does not delete tags on origin.
 - The suggested level comes from the commit subjects and `BREAKING CHANGE:` footers. kraken does not compare the code or the public API.
 - kraken never suggests 1.0.0: leave 0.x with `major` when you are ready.
-- Changelog entries are the commit subjects as they are; kraken does not let you edit them before the release.
+- Changelog entries are the commit subjects as they are; kraken does not let you edit them before the release. In the history, an `npm version` commit such as `1.2.0` goes under Changed.
+- The history that `kraken changelog` writes follows the version order of the tags. A tag whose version goes against the history, such as a lower version tagged on a later commit, gives one section too full and one empty.
 - Only `CHANGELOG.md` in the repository root, as a regular file. kraken does not read `changelog.md`, `CHANGES.md`, `HISTORY.md`, a changelog in a subdirectory or a `CHANGELOG.md` that is a symlink.
 - Compare links only for github.com, gitlab.com and codeberg.org. GitHub Enterprise, self-hosted GitLab or Forgejo, Bitbucket, and an SSH alias for any other host get none. A changelog with release sections and no version links gets none. kraken does not add an `[Unreleased]` definition.
 - kraken takes the first `## ` heading other than `## [Unreleased]` for the latest release. In a changelog that uses `##` for something else above the releases, such as `## Notes`, the new section goes above that heading.
