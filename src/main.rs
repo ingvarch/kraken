@@ -186,7 +186,7 @@ fn finish(release: &Release, plan: &Plan, push: bool) -> Result<()> {
 
 /// Asks for the level and confirmations in a full-screen panel, then releases after it closes.
 fn release_in_panel(release: &Release, level: Option<Level>) -> Result<()> {
-    let mut warnings: Vec<String> = release.warning().into_iter().collect();
+    let mut warnings = release.warnings();
     warnings.extend(check_origin(release)?);
     let facts = Facts {
         version_files: release
@@ -285,7 +285,7 @@ fn print_summary(release: &Release) {
     }
     println!("Current version: {}", release.current);
     println!("Changes: {}", release.tally().summary(release.latest_tag()));
-    if let Some(warning) = release.warning() {
+    for warning in release.warnings() {
         eprintln!("warning: {warning}");
     }
 }

@@ -865,6 +865,22 @@ mod tests {
     }
 
     #[test]
+    fn confirmation_shows_the_warning_about_no_commits() {
+        let mut facts = facts();
+        facts.warnings = vec![git_rejection(), "no commits since v1.2.3".to_string()];
+        let mut choices = choices();
+        if let Ok(plan) = &mut choices[0].plan {
+            plan.untracked = vec!["Cargo.lock".to_string()];
+        }
+        let mut app = App::new(facts, choices, None);
+        press(&mut app, KeyCode::Enter);
+
+        assert_shows(&app, "! no commits since v1.2.3");
+        assert_hides(&app, "too small");
+        assert_shows(&app, "enter release");
+    }
+
+    #[test]
     fn kraken_fits_the_narrowest_panel() {
         let art: Vec<&str> = KRAKEN.trim_matches('\n').lines().collect();
         assert!(art.len() > 5);

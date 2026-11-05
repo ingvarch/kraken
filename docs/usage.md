@@ -22,6 +22,7 @@ kraken changelog
 - `kraken minor` opens the panel on the confirmation of a minor release. If the commits suggest a higher level, the confirmation warns about it.
 - `kraken auto` opens the panel on the confirmation of the level the commits suggest. `esc` goes to the level screen.
 - `kraken auto --yes` takes the level from the commits, opens no panel and pushes if `origin` exists. Use this in scripts. With no commits since the latest tag it fails with `no commits since v1.4.2; nothing to release` and changes nothing.
+- `kraken patch`, `minor` and `major` also release when there are no commits since the latest tag, for example to go from 0.9.5 to 1.0.0. kraken warns and goes on: the panel shows `! no commits since v0.9.5`, and with `--yes` or `--dry-run` stderr gets `warning: no commits since v0.9.5`. A first release never warns.
 - `kraken minor --yes` opens no panel, asks nothing and pushes if `origin` exists. Use this in scripts.
 - `kraken minor --dry-run` shows what would change, with the whole changelog section, and changes nothing.
 - `kraken minor --no-changelog` releases without adding a section to `CHANGELOG.md`. It works with the panel, `--yes` and `--dry-run`.

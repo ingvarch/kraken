@@ -2451,3 +2451,77 @@ fn help_lists_auto() {
         stdout(&out)
     );
 }
+
+#[test]
+fn release_without_new_commits_warns() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+
+    let dry = repo.kraken(&["patch", "--dry-run"]);
+    assert_ok(&dry);
+    assert!(
+        stderr(&dry).contains("warning: no commits since v1.2.3\n"),
+        "{}",
+        stderr(&dry)
+    );
+
+    let out = repo.kraken(&["patch", "--yes"]);
+    assert_ok(&out);
+    assert!(
+        stderr(&out).contains("warning: no commits since v1.2.3\n"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(repo.tags(), ["v1.2.3", "v1.2.4"]);
+}
+
+#[test]
+fn release_warnings_list_the_empty_release_for_both_outputs() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+
+    let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
+
+    assert_eq!(release.warnings(), ["no commits since v1.2.3"]);
+}
+
+#[test]
+fn release_right_after_a_release_warns() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("fix: a");
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert!(
+        stderr(&out).contains("warning: no commits since v1.2.4\n"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn release_with_new_commits_does_not_warn_about_commits() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("fix: a");
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert!(!stderr(&out).contains("no commits"), "{}", stderr(&out));
+}
+
+#[test]
+fn first_release_does_not_warn() {
+    let repo = Repo::new();
+    repo.write("go.mod", "module demo\n");
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert!(!stderr(&out).contains("no commits"), "{}", stderr(&out));
+}

@@ -174,9 +174,17 @@ impl Release {
         self.latest.as_ref().map(|(tag, _)| tag.as_str())
     }
 
-    /// Set when the version files and the latest tag disagree.
-    pub fn warning(&self) -> Option<String> {
+    /// Warns when the version files and the latest tag disagree,
+    /// and when a tag exists but nothing was committed after it.
+    pub fn warnings(&self) -> Vec<String> {
+        let empty = self
+            .latest_tag()
+            .filter(|_| self.changes.commits.is_empty())
+            .map(|tag| format!("no commits since {tag}"));
         tag_warning(&self.manifests, &self.current, self.latest.as_ref())
+            .into_iter()
+            .chain(empty)
+            .collect()
     }
 
     /// Fails when origin has release tags that are missing here.
