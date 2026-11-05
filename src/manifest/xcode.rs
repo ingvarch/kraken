@@ -2,9 +2,9 @@ use std::fs;
 use std::ops::Range;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
-use super::{agreed_value, line_values, replace_ranges};
+use super::{agreed_value, line_values, replace_ranges, single};
 
 const SETTING: &str = "MARKETING_VERSION = ";
 
@@ -39,15 +39,8 @@ pub fn find(root: &Path, is_ignored: impl Fn(&str) -> Result<bool>) -> Result<Op
             projects.push(name);
         }
     }
-    projects.sort();
-    match projects.as_slice() {
-        [] => Ok(None),
-        [name] => Ok(Some(format!("{name}/project.pbxproj"))),
-        _ => bail!(
-            "more than one Xcode project sets MARKETING_VERSION: {}",
-            projects.join(", ")
-        ),
-    }
+    Ok(single(projects, "Xcode project sets MARKETING_VERSION")?
+        .map(|name| format!("{name}/project.pbxproj")))
 }
 
 fn sets_version(pbxproj: &Path) -> Result<bool> {
