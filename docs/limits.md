@@ -16,6 +16,7 @@ What kraken does not support. What it does support is in [how-it-works.md](how-i
 - kraken never suggests 1.0.0: leave 0.x with `major` when you are ready.
 - Changelog entries are the commit subjects as they are; kraken does not let you edit them before the release.
 - Only `CHANGELOG.md` in the repository root, as a regular file. kraken does not read `changelog.md`, `CHANGES.md`, `HISTORY.md`, a changelog in a subdirectory or a `CHANGELOG.md` that is a symlink.
+- Compare links only for github.com, gitlab.com and codeberg.org. GitHub Enterprise, self-hosted GitLab or Forgejo, Bitbucket, and an SSH alias for any other host get none. A changelog with release sections and no version links gets none. kraken does not add an `[Unreleased]` definition.
 - kraken takes the first `## ` heading other than `## [Unreleased]` for the latest release. In a changelog that uses `##` for something else above the releases, such as `## Notes`, the new section goes above that heading.
 - kraken does not move what you wrote under `## [Unreleased]` into the new section. They stay there after the release; move them into the release section yourself.
 - A version set in `build.gradle` or `build.gradle.kts` is code, and kraken does not read it. Put the version in `gradle.properties`.

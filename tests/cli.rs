@@ -111,6 +111,42 @@ fn bare_origin() -> TempDir {
     origin
 }
 
+/// A GitHub that works offline: `bin/ssh` runs git's commands in a directory with the bare
+/// repository `o/r.git`, and answers `ssh -G` with `FAKE_SSH_HOSTNAME` or the host asked for.
+struct FakeGitHub {
+    dir: TempDir,
+}
+
+impl FakeGitHub {
+    fn new() -> FakeGitHub {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let script = format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = -G ]; then echo \"hostname ${{FAKE_SSH_HOSTNAME:-$2}}\"; exit 0; fi\n\
+             while [ $# -gt 0 ]; do case \"$1\" in -o|-p|-i|-l|-F) shift 2;; -*) shift;; *) break;; esac; done\n\
+             shift\n\
+             cd \"{}/remote\" && exec sh -c \"$*\"\n",
+            dir.path().display()
+        );
+        fs::write(bin.join("ssh"), script).unwrap();
+        fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o755)).unwrap();
+        let bare = dir.path().join("remote/o/r.git");
+        fs::create_dir_all(&bare).unwrap();
+        git_in(&bare, &["init", "-q", "--bare"]);
+        FakeGitHub { dir }
+    }
+
+    fn path(&self) -> String {
+        format!(
+            "{}:{}",
+            self.dir.path().join("bin").display(),
+            std::env::var("PATH").unwrap()
+        )
+    }
+}
+
 struct Repo {
     dir: TempDir,
 }
@@ -192,6 +228,25 @@ impl Repo {
         self.write("CHANGELOG.md", TEMPLATE);
         self.node();
         self.git(&["tag", "v1.2.3"]);
+    }
+
+    fn add_github_origin(&self, _github: &FakeGitHub) {
+        self.set_origin("git@github.com:o/r.git");
+    }
+
+    fn set_origin(&self, url: &str) {
+        self.git(&["remote", "add", "origin", url]);
+    }
+
+    /// Runs kraken dated [`RELEASED_AT`], with the fake `ssh` of `github` first on PATH.
+    fn kraken_on(&self, github: &FakeGitHub, args: &[&str], hostname: &str) -> Output {
+        isolate(Command::new(env!("CARGO_BIN_EXE_kraken")).args(args))
+            .env("GIT_COMMITTER_DATE", RELEASED_AT)
+            .env("PATH", github.path())
+            .env("FAKE_SSH_HOSTNAME", hostname)
+            .current_dir(self.path())
+            .output()
+            .unwrap()
     }
 
     fn add_origin(&self, origin: &TempDir) {
@@ -2153,6 +2208,386 @@ fn restores_the_changelog_when_commit_fails() {
 
     assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
     assert_eq!(repo.status(), "");
+}
+
+const GH: &str = "https://github.com/o/r";
+
+/// A repository at v1.2.3 with GitHub as origin and `changelog` committed.
+fn github_repo(changelog: &str) -> (Repo, FakeGitHub) {
+    let repo = Repo::new();
+    repo.write("CHANGELOG.md", changelog);
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+    repo.commit("feat: add a command");
+    let github = FakeGitHub::new();
+    repo.add_github_origin(&github);
+    (repo, github)
+}
+
+fn github_release(repo: &Repo, github: &FakeGitHub) {
+    let out = repo.kraken_on(github, &["patch", "--yes"], "github.com");
+    assert_ok(&out);
+}
+
+#[test]
+fn release_links_the_section_to_the_github_compare_page() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    github_release(&repo, &github);
+
+    let changelog = repo.read("CHANGELOG.md");
+    assert!(
+        changelog.ends_with(&format!("\n[1.2.4]: {GH}/compare/v1.2.3...v1.2.4\n")),
+        "{changelog}"
+    );
+    assert!(
+        repo.git(&["show", "HEAD:CHANGELOG.md"])
+            .contains("[1.2.4]: ")
+    );
+}
+
+#[test]
+fn first_release_links_the_tag_page() {
+    let repo = Repo::new();
+    repo.write("CHANGELOG.md", TEMPLATE);
+    repo.write("VERSION", "0.1.0\n");
+    repo.commit_all();
+    let github = FakeGitHub::new();
+    repo.add_github_origin(&github);
+
+    github_release(&repo, &github);
+
+    assert!(
+        repo.read("CHANGELOG.md")
+            .ends_with(&format!("\n[0.1.1]: {GH}/releases/tag/v0.1.1\n"))
+    );
+}
+
+#[test]
+fn release_links_keep_the_tag_style() {
+    let (repo, github) = github_repo(TEMPLATE);
+    repo.git(&["tag", "-d", "v1.2.3"]);
+    repo.git(&["tag", "1.2.3", "HEAD~1"]);
+
+    github_release(&repo, &github);
+
+    assert!(
+        repo.read("CHANGELOG.md")
+            .ends_with(&format!("[1.2.4]: {GH}/compare/1.2.3...1.2.4\n"))
+    );
+}
+
+#[test]
+fn release_moves_the_unreleased_link() {
+    let changelog = format!(
+        "{TEMPLATE}\n## [1.2.3] - 2026-10-01\n\n- a\n\n[Unreleased]: {GH}/compare/v1.2.3...HEAD\n[1.2.3]: {GH}/releases/tag/v1.2.3\n"
+    );
+    let (repo, github) = github_repo(&changelog);
+
+    github_release(&repo, &github);
+
+    assert!(
+        repo.read("CHANGELOG.md").ends_with(&format!(
+            "[Unreleased]: {GH}/compare/v1.2.4...HEAD\n[1.2.4]: {GH}/compare/v1.2.3...v1.2.4\n[1.2.3]: {GH}/releases/tag/v1.2.3\n"
+        )),
+        "{}",
+        repo.read("CHANGELOG.md")
+    );
+}
+
+#[test]
+fn release_keeps_adding_links_to_your_own_changelog() {
+    let changelog = format!(
+        "# Changelog\n\n{KRAKEN_LINE}\n\n## [Unreleased]\n\n## [1.2.3] - 2026-10-01\n\n- a\n\n[unreleased]: {GH}/compare/v1.2.3...HEAD\n[1.2.3]: {GH}/compare/v1.2.2...v1.2.3\n"
+    );
+    let (repo, github) = github_repo(&changelog);
+
+    github_release(&repo, &github);
+
+    let text = repo.read("CHANGELOG.md");
+    assert!(
+        text.contains("## [Unreleased]\n\n## [1.2.4] - 2026-11-04\n"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(&format!(
+            "[unreleased]: {GH}/compare/v1.2.4...HEAD\n[1.2.4]: {GH}/compare/v1.2.3...v1.2.4\n[1.2.3]: {GH}/compare/v1.2.2...v1.2.3\n"
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn release_adds_no_links_to_a_changelog_with_releases_and_no_links() {
+    let changelog = format!("{TEMPLATE}\n## [1.2.3] - 2026-10-01\n\n- a\n");
+    let (repo, github) = github_repo(&changelog);
+
+    github_release(&repo, &github);
+
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!(
+            "{TEMPLATE}\n## [1.2.4] - 2026-11-04\n\n### Added\n\n- add a command\n\n## [1.2.3] - 2026-10-01\n\n- a\n"
+        )
+    );
+}
+
+#[test]
+fn release_adds_no_links_without_origin() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: add a command");
+
+    assert_ok(&repo.kraken_dated(&["patch", "--yes"]));
+
+    assert!(!repo.read("CHANGELOG.md").contains("]: "));
+}
+
+#[test]
+fn release_adds_no_links_for_another_host() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: add a command");
+    let origin = bare_origin();
+    repo.add_origin(&origin);
+
+    assert_ok(&repo.kraken_dated(&["patch", "--yes"]));
+
+    assert!(!repo.read("CHANGELOG.md").contains("]: "));
+}
+
+#[test]
+fn release_resolves_an_ssh_host_alias() {
+    let (repo, github) = github_repo(TEMPLATE);
+    repo.git(&[
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        "git@github-work:o/r.git",
+    ]);
+
+    assert_ok(&repo.kraken_on(&github, &["patch", "--yes"], "github.com"));
+
+    assert!(
+        repo.read("CHANGELOG.md")
+            .ends_with(&format!("[1.2.4]: {GH}/compare/v1.2.3...v1.2.4\n"))
+    );
+}
+
+#[test]
+fn release_maps_the_github_port_443_host_back_to_github() {
+    let (repo, github) = github_repo(TEMPLATE);
+    repo.git(&[
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        "git@github.com:o/r.git",
+    ]);
+
+    assert_ok(&repo.kraken_on(&github, &["patch", "--yes"], "ssh.github.com"));
+
+    assert!(
+        repo.read("CHANGELOG.md")
+            .ends_with(&format!("[1.2.4]: {GH}/compare/v1.2.3...v1.2.4\n"))
+    );
+}
+
+#[test]
+fn an_ssh_alias_for_another_host_gets_no_links() {
+    let (repo, github) = github_repo(TEMPLATE);
+    repo.git(&["remote", "set-url", "--push", "origin", "git@work:o/r.git"]);
+
+    assert_ok(&repo.kraken_on(&github, &["patch", "--yes"], "git.example.com"));
+
+    assert!(!repo.read("CHANGELOG.md").contains("]: "));
+}
+
+#[test]
+fn origin_credentials_never_reach_the_output() {
+    let (repo, github) = github_repo(TEMPLATE);
+    repo.git(&[
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        "https://user:s3cret@github.com/o/r.git",
+    ]);
+
+    let out = repo.kraken_on(&github, &["patch", "--dry-run"], "github.com");
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains(&format!("[1.2.4]: {GH}/compare/v1.2.3...v1.2.4")),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!format!("{}{}", stdout(&out), stderr(&out)).contains("s3cret"));
+}
+
+#[test]
+fn dry_run_shows_the_links() {
+    let changelog = format!(
+        "{TEMPLATE}\n## [1.2.3] - 2026-10-01\n\n- a\n\n[Unreleased]: {GH}/compare/v1.2.3...HEAD\n[1.2.3]: {GH}/releases/tag/v1.2.3\n"
+    );
+    let (repo, github) = github_repo(&changelog);
+
+    let out = repo.kraken_on(&github, &["minor", "--dry-run"], "github.com");
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains(&format!(
+            "    - add a command\n\n  set the links at the end of CHANGELOG.md:\n\n    [Unreleased]: {GH}/compare/v1.3.0...HEAD\n    [1.3.0]: {GH}/compare/v1.2.3...v1.3.0\n"
+        )),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(repo.read("CHANGELOG.md"), changelog);
+}
+
+#[test]
+fn restores_the_links_when_commit_fails() {
+    let changelog = format!(
+        "{TEMPLATE}\n## [1.2.3] - 2026-10-01\n\n- a\n\n[Unreleased]: {GH}/compare/v1.2.3...HEAD\n[1.2.3]: {GH}/releases/tag/v1.2.3\n"
+    );
+    let (repo, github) = github_repo(&changelog);
+    let hook = repo.path().join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(
+        !repo
+            .kraken_on(&github, &["patch", "--yes"], "github.com")
+            .status
+            .success()
+    );
+
+    assert_eq!(repo.read("CHANGELOG.md"), changelog);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn a_changelog_without_releases_gets_the_section_above_its_links() {
+    let changelog = format!("{TEMPLATE}\n[Unreleased]: {GH}/compare/v1.2.3...HEAD\n");
+    let (repo, github) = github_repo(&changelog);
+
+    github_release(&repo, &github);
+
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!(
+            "{TEMPLATE}\n## [1.2.4] - 2026-11-04\n\n### Added\n\n- add a command\n\n[Unreleased]: {GH}/compare/v1.2.4...HEAD\n[1.2.4]: {GH}/compare/v1.2.3...v1.2.4\n"
+        )
+    );
+}
+
+#[test]
+fn final_release_links_from_the_last_final_tag() {
+    let (repo, github) = github_repo(TEMPLATE);
+    assert_ok(&repo.kraken_on(&github, &["minor", "--pre", "rc", "--yes"], "github.com"));
+    repo.commit("feat: add another command");
+
+    assert_ok(&repo.kraken_on(&github, &["minor", "--yes"], "github.com"));
+
+    assert!(
+        repo.read("CHANGELOG.md")
+            .ends_with(&format!("[1.3.0]: {GH}/compare/v1.2.3...v1.3.0\n")),
+        "{}",
+        repo.read("CHANGELOG.md")
+    );
+}
+
+#[test]
+fn final_release_after_an_rc_moves_unreleased_from_the_last_final_tag() {
+    let changelog = format!(
+        "{TEMPLATE}\n## [1.2.3] - 2026-10-01\n\n- a\n\n[Unreleased]: {GH}/compare/v1.2.3...HEAD\n[1.2.3]: {GH}/releases/tag/v1.2.3\n"
+    );
+    let (repo, github) = github_repo(&changelog);
+    assert_ok(&repo.kraken_on(&github, &["minor", "--pre", "rc", "--yes"], "github.com"));
+    repo.commit("feat: add another command");
+
+    assert_ok(&repo.kraken_on(&github, &["minor", "--yes"], "github.com"));
+
+    assert!(
+        repo.read("CHANGELOG.md").contains(&format!(
+            "[Unreleased]: {GH}/compare/v1.3.0...HEAD\n[1.3.0]: {GH}/compare/v1.2.3...v1.3.0\n"
+        )),
+        "{}",
+        repo.read("CHANGELOG.md")
+    );
+}
+
+#[test]
+fn pre_release_adds_no_link() {
+    let changelog = format!(
+        "{TEMPLATE}\n## [1.2.3] - 2026-10-01\n\n- a\n\n[Unreleased]: {GH}/compare/v1.2.3...HEAD\n[1.2.3]: {GH}/releases/tag/v1.2.3\n"
+    );
+    let (repo, github) = github_repo(&changelog);
+
+    let dry = repo.kraken_on(
+        &github,
+        &["minor", "--pre", "rc", "--dry-run"],
+        "github.com",
+    );
+    assert_ok(&dry);
+    assert!(!stdout(&dry).contains("set the links"), "{}", stdout(&dry));
+
+    assert_ok(&repo.kraken_on(&github, &["minor", "--pre", "rc", "--yes"], "github.com"));
+    assert_eq!(repo.read("CHANGELOG.md"), changelog);
+}
+
+#[test]
+fn links_use_the_push_url_not_the_fetch_url() {
+    let (repo, github) = github_repo(TEMPLATE);
+    let mirror = bare_origin();
+    repo.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        mirror.path().to_str().unwrap(),
+    ]);
+    repo.git(&[
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        "https://github.com/o/r.git",
+    ]);
+
+    let out = repo.kraken_on(&github, &["patch", "--dry-run"], "github.com");
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains(&format!("[1.2.4]: {GH}/compare/v1.2.3...v1.2.4")),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn trailing_blank_lines_stay_below_a_new_first_link() {
+    let changelog = format!("{TEMPLATE}\n[docs]: https://example.com\n\n\n");
+    let (repo, github) = github_repo(&changelog);
+
+    github_release(&repo, &github);
+
+    assert!(
+        repo.read("CHANGELOG.md").ends_with(&format!(
+            "[docs]: https://example.com\n[1.2.4]: {GH}/compare/v1.2.3...v1.2.4\n\n\n"
+        )),
+        "{}",
+        repo.read("CHANGELOG.md")
+    );
+}
+
+#[test]
+fn no_changelog_flag_adds_no_links() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    assert_ok(&repo.kraken_on(&github, &["patch", "--yes", "--no-changelog"], "github.com"));
+
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
 }
 
 fn node_tagged(repo: &Repo) {

@@ -3,6 +3,7 @@ mod cmd;
 pub mod commit;
 mod git;
 pub mod manifest;
+pub mod origin;
 pub mod release;
 pub mod ui;
 pub mod undo;

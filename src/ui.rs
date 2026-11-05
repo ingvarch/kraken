@@ -580,6 +580,7 @@ mod tests {
             files: vec!["package.json".to_string(), "package-lock.json".to_string()],
             untracked: vec![],
             changelog: None,
+            links: None,
             other_spellings: vec![],
             changelog_waits: None,
         }

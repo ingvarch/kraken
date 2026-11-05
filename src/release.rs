@@ -5,10 +5,11 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use semver::Version;
 
-use crate::changelog::{self, Changes, Section};
+use crate::changelog::{self, Changes, Links, Section};
 use crate::commit::Tally;
 use crate::git::Git;
 use crate::manifest::{self, Manifest};
+use crate::origin::{self, Pages, Repo};
 use crate::version::{
     Level, Pre, latest_final_tag, latest_release_tag, next, release_tag_version, suggest,
 };
@@ -34,6 +35,8 @@ pub struct Release {
     changes: Changes,
     /// Release date; set only when the release adds a section to CHANGELOG.md.
     date: Option<String>,
+    /// The repository origin pushes to; set only when the release adds a section to CHANGELOG.md.
+    origin: Option<Repo>,
 }
 
 /// The version kraken releases from, read without changing or fetching anything.
@@ -139,6 +142,8 @@ pub struct Plan {
     pub commit: Option<String>,
     /// The section CHANGELOG.md gets; `None` without CHANGELOG.md.
     pub changelog: Option<Section>,
+    /// The link definitions CHANGELOG.md gets; `None` without a section or links.
+    pub links: Option<Links>,
     /// Spellings that differ from the tag's, with the files that get each.
     pub other_spellings: Vec<(String, Vec<String>)>,
     /// The final version that gets the changelog section a pre-release leaves out.
@@ -167,6 +172,10 @@ impl Release {
         let date = writes_changelog
             .then(|| changelog::ident_date(&git.committer_ident()?))
             .transpose()?;
+        let origin = match &remote_branch {
+            Some(_) if writes_changelog => origin::resolve(&git.push_url(ORIGIN)?, git.root()),
+            _ => None,
+        };
         let changes = Changes {
             commits: git.commits_since(final_tag.as_deref())?,
         };
@@ -182,6 +191,7 @@ impl Release {
             remote_branch,
             changes,
             date,
+            origin,
         })
     }
 
@@ -275,6 +285,14 @@ impl Release {
             .clone()
             .filter(|_| is_final)
             .map(|date| self.changes.section(&version, date));
+        let links = match (&section, self.origin.as_ref().and_then(Pages::of)) {
+            (Some(_), Some(pages)) => {
+                let text = fs::read_to_string(self.git.root().join(changelog::FILE))
+                    .context(changelog::FILE)?;
+                changelog::links(&text, &pages, &version, self.final_tag(), &tag)
+            }
+            _ => None,
+        };
         let changelog_waits = (self.date.is_some() && !is_final)
             .then(|| Version::new(version.major, version.minor, version.patch));
         if section.is_some() {
@@ -307,6 +325,7 @@ impl Release {
             untracked,
             commit,
             changelog: section,
+            links,
             other_spellings: spellings,
             changelog_waits,
         })
@@ -380,7 +399,11 @@ impl Release {
             }
         }
         if let Some(section) = &plan.changelog {
-            let text = changelog::insert(&originals[changelog::FILE], &section.markdown());
+            let text = changelog::insert(
+                &originals[changelog::FILE],
+                &section.markdown(),
+                plan.links.as_ref(),
+            );
             fs::write(root.join(changelog::FILE), text).context(changelog::FILE)?;
         }
         Ok(())

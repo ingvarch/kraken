@@ -419,6 +419,12 @@ fn print_dry_run(release: &Release, plan: &Plan) {
             }
         }
     }
+    if let Some(links) = &plan.links {
+        println!("\n  set the links at the end of {}:\n", changelog::FILE);
+        for line in links.unreleased.iter().chain([&links.release]) {
+            println!("    {line}");
+        }
+    }
     print_untracked(plan);
 }
 
