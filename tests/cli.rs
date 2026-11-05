@@ -291,6 +291,66 @@ fn xcode_patch_release_sets_every_configuration() {
     assert_eq!(repo.status(), "");
 }
 
+#[test]
+fn pubspec_patch_release_keeps_the_build_number() {
+    const PUBSPEC: &str = "name: app\nversion: 1.2.3+7 # store\n";
+    const LOCK: &str = "packages:\n  meta:\n    dependency: transitive\n    description: {name: meta}\n    source: hosted\n    version: \"1.2.3\"\n";
+    let repo = Repo::new();
+    repo.write("pubspec.yaml", PUBSPEC);
+    repo.write("pubspec.lock", LOCK);
+    repo.commit_all();
+    repo.git(&["tag", "v1.2.3"]);
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("pubspec.yaml"),
+        "name: app\nversion: 1.2.4+7 # store\n"
+    );
+    assert_eq!(repo.read("pubspec.lock"), LOCK);
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "chore(release): v1.2.4"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn pubspec_without_a_version_releases_from_tags() {
+    const PUBSPEC: &str = "name: _\npublish_to: none\n";
+    let repo = Repo::new();
+    repo.write("pubspec.yaml", PUBSPEC);
+    repo.commit_all();
+    repo.git(&["tag", "v0.4.0"]);
+    let before = repo.head();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.head(), before);
+    assert_eq!(repo.tag_commit("v0.4.1"), before);
+    assert_eq!(repo.read("pubspec.yaml"), PUBSPEC);
+}
+
+#[test]
+fn refuses_a_pubspec_pre_release() {
+    const PUBSPEC: &str = "name: app\nversion: 1.2.3-dev.1+4\n";
+    let repo = Repo::new();
+    repo.write("pubspec.yaml", PUBSPEC);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "pubspec.yaml: \"1.2.3-dev.1\": pre-release versions are not supported",
+    );
+    assert_eq!(repo.read("pubspec.yaml"), PUBSPEC);
+    assert_eq!(repo.status(), "");
+}
+
 const PROJECT_YML: &str = "name: App\nsettings:\n  base:\n    MARKETING_VERSION: \"1.2.3\" # app\n    CURRENT_PROJECT_VERSION: 7\n";
 const GENERATED_PBXPROJ: &str =
     "{\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n\t\t\t\tMARKETING_VERSION = 1.2.3;\n}\n";

@@ -1,6 +1,7 @@
 mod cargo;
 mod gradle;
 mod package_json;
+mod pubspec;
 mod pyproject;
 mod version_file;
 mod xcode;
@@ -27,10 +28,11 @@ pub enum Kind {
     Gradle,
     XcodeGen,
     Xcode,
+    Pubspec,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::PackageJson,
         Kind::CargoToml,
         Kind::Pyproject,
@@ -40,6 +42,7 @@ impl Kind {
         Kind::Gradle,
         Kind::XcodeGen,
         Kind::Xcode,
+        Kind::Pubspec,
     ];
 
     /// The path of this kind's file in `root`, relative to it, or `None` when there is none.
@@ -58,6 +61,7 @@ impl Kind {
             Kind::Jsr => &["jsr.json", "jsr.jsonc"],
             Kind::Gradle => &["gradle.properties"],
             Kind::XcodeGen => &["project.yml"],
+            Kind::Pubspec => &["pubspec.yaml"],
             Kind::Xcode => return xcode::find(root, is_ignored),
         };
         for path in names.iter().filter_map(|name| existing(root, name)) {
@@ -76,7 +80,12 @@ impl Kind {
             Kind::Pyproject => "uv.lock",
             // The generated project is updated even when git ignores it.
             Kind::XcodeGen => return xcodegen::generated_project(root),
-            Kind::VersionFile | Kind::Deno | Kind::Jsr | Kind::Gradle | Kind::Xcode => {
+            Kind::VersionFile
+            | Kind::Deno
+            | Kind::Jsr
+            | Kind::Gradle
+            | Kind::Xcode
+            | Kind::Pubspec => {
                 return Ok(None);
             }
         };
@@ -92,6 +101,7 @@ impl Kind {
             Kind::Gradle => gradle::read_version(text),
             Kind::XcodeGen => xcodegen::read_version(text),
             Kind::Xcode => xcode::read_version(text),
+            Kind::Pubspec => pubspec::read_version(text),
         }
     }
 
@@ -104,6 +114,7 @@ impl Kind {
             Kind::Gradle => gradle::set_version(text, version),
             Kind::XcodeGen => xcodegen::set_version(text, version),
             Kind::Xcode => xcode::set_version(text, version),
+            Kind::Pubspec => pubspec::set_version(text, version),
         }
     }
 
@@ -119,7 +130,8 @@ impl Kind {
             | Kind::Jsr
             | Kind::Gradle
             | Kind::XcodeGen
-            | Kind::Xcode => Ok(()),
+            | Kind::Xcode
+            | Kind::Pubspec => Ok(()),
         }
     }
 
@@ -133,9 +145,12 @@ impl Kind {
             }
             Kind::Pyproject => pyproject::set_uv_lock_version(lock, version),
             Kind::XcodeGen => xcode::set_version(lock, version),
-            Kind::VersionFile | Kind::Deno | Kind::Jsr | Kind::Gradle | Kind::Xcode => {
-                Ok(lock.to_string())
-            }
+            Kind::VersionFile
+            | Kind::Deno
+            | Kind::Jsr
+            | Kind::Gradle
+            | Kind::Xcode
+            | Kind::Pubspec => Ok(lock.to_string()),
         }
     }
 }
@@ -236,6 +251,22 @@ fn either_version(
         }
         (a, b) => Ok(a.or(b).map(str::to_string)),
     }
+}
+
+/// The value after `key` at the start of `line`, without its quotes or a trailing comment.
+pub(super) fn yaml_value(line: &str, key: &str) -> Option<Range<usize>> {
+    let value = line.strip_prefix(key)?.trim_start();
+    let start = line.len() - value.len();
+    if let Some(quote) = value.chars().next().filter(|c| matches!(c, '"' | '\'')) {
+        let inner = &value[1..];
+        let len = inner.find(quote).unwrap_or(inner.trim_end().len());
+        return Some(start + 1..start + 1 + len);
+    }
+    let end = value
+        .char_indices()
+        .find(|&(i, c)| c == '#' && value[..i].ends_with(char::is_whitespace))
+        .map_or(value.len(), |(i, _)| i);
+    Some(start..start + value[..end].trim_end().len())
 }
 
 /// The byte ranges that `value_range` finds on the lines of `text`.
@@ -501,6 +532,22 @@ mod tests {
         assert_eq!(
             find(Kind::VersionFile, dir.path()).as_deref(),
             Some("VERSION")
+        );
+    }
+
+    #[test]
+    fn pubspec_must_be_named_exactly() {
+        for name in ["pubspec.yml", "Pubspec.yaml"] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join(name), "version: 1.2.3").unwrap();
+            assert_eq!(find(Kind::Pubspec, dir.path()), None, "{name}");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("pubspec.yaml"), "version: 1.2.3").unwrap();
+        assert_eq!(
+            find(Kind::Pubspec, dir.path()).as_deref(),
+            Some("pubspec.yaml")
         );
     }
 

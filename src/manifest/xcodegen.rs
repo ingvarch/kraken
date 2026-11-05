@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::{agreed_value, line_values, replace_ranges};
+use super::{agreed_value, line_values, replace_ranges, yaml_value};
 
 const FILE: &str = "project.yml";
 const KEY: &str = "MARKETING_VERSION:";
@@ -35,30 +35,14 @@ pub fn generated_project(root: &Path) -> Result<Option<String>> {
 
 fn project_name(text: &str) -> Option<&str> {
     text.lines()
-        .find_map(|line| value_range(line, "name:").map(|range| &line[range]))
+        .find_map(|line| yaml_value(line, "name:").map(|range| &line[range]))
         .filter(|name| !name.is_empty())
 }
 
 fn version_value(line: &str) -> Option<Range<usize>> {
     let indent = line.len() - line.trim_start().len();
-    let range = value_range(&line[indent..], KEY)?;
+    let range = yaml_value(&line[indent..], KEY)?;
     Some(indent + range.start..indent + range.end)
-}
-
-/// The value after `key` at the start of `line`, without its quotes or a trailing comment.
-fn value_range(line: &str, key: &str) -> Option<Range<usize>> {
-    let value = line.strip_prefix(key)?.trim_start();
-    let start = line.len() - value.len();
-    if let Some(quote) = value.chars().next().filter(|c| matches!(c, '"' | '\'')) {
-        let inner = &value[1..];
-        let len = inner.find(quote).unwrap_or(inner.trim_end().len());
-        return Some(start + 1..start + 1 + len);
-    }
-    let end = value
-        .char_indices()
-        .find(|&(i, c)| c == '#' && value[..i].ends_with(char::is_whitespace))
-        .map_or(value.len(), |(i, _)| i);
-    Some(start..start + value[..end].trim_end().len())
 }
 
 #[cfg(test)]

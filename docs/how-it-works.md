@@ -18,6 +18,7 @@ kraken looks for version files in the repository root:
 | `deno.json` or `deno.jsonc` | `version` |
 | `jsr.json` or `jsr.jsonc` | `version` |
 | `gradle.properties` | the `version` line |
+| `pubspec.yaml` | the top-level `version`, up to the `+` |
 | `project.yml` (XcodeGen) | every `MARKETING_VERSION:` line |
 | `<Name>.xcodeproj/project.pbxproj` | every `MARKETING_VERSION` line |
 | `VERSION` | the whole file: the text without the whitespace around it |
