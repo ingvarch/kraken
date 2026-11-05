@@ -14,7 +14,7 @@ Or download an archive for your platform from the [releases](https://github.com/
 
 ```
 kraken [patch|minor|major|auto] [--yes] [--dry-run] [--no-changelog]
-kraken version
+kraken version [--next]
 kraken changelog
 ```
 
@@ -26,6 +26,7 @@ kraken changelog
 - `kraken minor --dry-run` shows what would change, with the whole changelog section, and changes nothing.
 - `kraken minor --no-changelog` releases without adding a section to `CHANGELOG.md`. It works with the panel, `--yes` and `--dry-run`.
 - `kraken version` prints the version kraken would release from, for example `1.4.2`, and changes nothing. It needs no clean tree or branch and does not touch the network. In a shallow clone it needs version files, and it cannot compare them with tags the clone did not fetch; with tags alone run `git fetch --unshallow --tags` first. A warning about a differing tag goes to stderr, so `$(kraken version)` holds only the version.
+- `kraken version --next` prints the version the next release gets, such as `1.5.0`, with the level taken from the commits, and changes nothing. The changes and the level go to stderr, so `$(kraken version --next)` holds only the version. It fails with nothing to release, an existing tag or a shallow clone; in GitHub Actions use `fetch-depth: 0`.
 - `kraken changelog` creates `CHANGELOG.md` in the repository root and changes nothing else. Commit the file, and every release adds a section to it, see [how-it-works.md](how-it-works.md#changelog). An existing file stays as it is: if it has the kraken line, `kraken changelog` says so; if not, it fails and prints the line to add.
 
 ## Without a terminal

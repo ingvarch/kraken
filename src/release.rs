@@ -68,6 +68,44 @@ impl Current {
     }
 }
 
+/// The release the commits since the latest tag call for, worked out without changing anything.
+pub struct Next {
+    pub current: Version,
+    pub version: Version,
+    pub level: Level,
+    pub commits: Tally,
+    pub latest_tag: Option<String>,
+    warning: Option<String>,
+}
+
+impl Next {
+    /// Runs the tag checks of a release; skips the branch, clean-tree and origin checks.
+    pub fn of(dir: &Path) -> Result<Next> {
+        let git = Git::discover(dir)?;
+        git.head()?;
+        git.ensure_not_shallow()?;
+        let current = Current::read(&git)?;
+        let latest_tag = current.latest.as_ref().map(|(tag, _)| tag.clone());
+        let commits = Tally::of(&git.commits_since(latest_tag.as_deref())?);
+        let level = auto_level(&current.version, &commits, latest_tag.as_deref())?;
+        let version = bump(&current.version, level);
+        next_tag(&git, current.latest.as_ref(), &version)?;
+        Ok(Next {
+            warning: current.warning(),
+            current: current.version,
+            version,
+            level,
+            commits,
+            latest_tag,
+        })
+    }
+
+    /// Set when the version files and the latest tag disagree.
+    pub fn warning(&self) -> Option<&str> {
+        self.warning.as_deref()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Plan {
     pub version: Version,
@@ -160,18 +198,7 @@ impl Release {
 
     pub fn plan(&self, level: Level) -> Result<Plan> {
         let version = bump(&self.current, level);
-        let prefix = tag_prefix(self.latest.as_ref().map(|(tag, _)| tag.as_str()));
-        let tag = format!("{prefix}{version}");
-        if self.git.tag_exists(&tag) {
-            bail!("tag {tag} already exists");
-        }
-        if let Some((latest_tag, latest)) = &self.latest
-            && version <= *latest
-        {
-            bail!(
-                "{version} is not higher than the latest tag {latest_tag}; bring the version files up to date first"
-            );
-        }
+        let tag = next_tag(&self.git, self.latest.as_ref(), &version)?;
 
         let mut files = Vec::new();
         for manifest in &self.manifests {
@@ -330,6 +357,23 @@ pub fn auto_level(current: &Version, tally: &Tally, since: Option<&str>) -> Resu
             since.unwrap_or("the first commit")
         )
     })
+}
+
+/// The tag for `version`; fails when it exists or is not above the latest tag.
+fn next_tag(git: &Git, latest: Option<&(String, Version)>, version: &Version) -> Result<String> {
+    let prefix = tag_prefix(latest.map(|(tag, _)| tag.as_str()));
+    let tag = format!("{prefix}{version}");
+    if git.tag_exists(&tag) {
+        bail!("tag {tag} already exists");
+    }
+    if let Some((latest_tag, latest)) = latest
+        && version <= latest
+    {
+        bail!(
+            "{version} is not higher than the latest tag {latest_tag}; bring the version files up to date first"
+        );
+    }
+    Ok(tag)
 }
 
 /// "main and v1.2.4 to origin", naming the remote branch when it differs; `None` without origin.

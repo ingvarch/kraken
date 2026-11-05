@@ -1291,8 +1291,273 @@ fn version_takes_no_flags() {
     for flag in ["--yes", "--dry-run"] {
         let out = repo.kraken(&["version", flag]);
         assert_eq!(out.status.code(), Some(2), "{flag}");
-        assert!(stderr(&out).contains("unexpected argument"), "{flag}");
+        assert!(
+            stderr(&out).contains(&format!("unexpected argument '{flag}' found")),
+            "{flag}: {}",
+            stderr(&out)
+        );
     }
+}
+
+fn cargo_tagged(repo: &Repo) {
+    repo.write("Cargo.toml", CARGO_TOML);
+    repo.write("Cargo.lock", CARGO_LOCK);
+    repo.write("src/lib.rs", "");
+    repo.commit_all();
+    repo.git(&["tag", "v0.1.0"]);
+}
+
+fn go_module(repo: &Repo) {
+    repo.write("go.mod", "module demo\n");
+    repo.commit_all();
+}
+
+#[test]
+fn version_next_prints_the_next_version() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    repo.commit("fix: b");
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.3.0\n");
+    assert_eq!(
+        stderr(&out),
+        "Changes: 1 feature, 1 fix since v1.2.3\nLevel: minor\n"
+    );
+}
+
+#[test]
+fn version_next_prints_major_for_a_breaking_change() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat!: a");
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "2.0.0\n");
+    assert_eq!(
+        stderr(&out),
+        "Changes: 1 breaking change since v1.2.3\nLevel: major\n"
+    );
+}
+
+#[test]
+fn version_next_prints_minor_for_a_breaking_change_in_0x() {
+    let repo = Repo::new();
+    cargo_tagged(&repo);
+    repo.commit("feat!: a");
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "0.2.0\n");
+    assert!(
+        stderr(&out).contains("Level: minor (breaking changes bump minor in 0.x)\n"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn version_next_counts_every_commit_without_tags() {
+    let repo = Repo::new();
+    go_module(&repo);
+    repo.commit("fix: a");
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "0.0.1\n");
+    assert_eq!(
+        stderr(&out),
+        "Changes: 1 fix, 1 other commit since the first commit\nLevel: patch\n"
+    );
+}
+
+#[test]
+fn version_next_starts_from_the_latest_tag_without_version_files() {
+    let repo = Repo::new();
+    go_module(&repo);
+    repo.git(&["tag", "v1.0.0"]);
+    repo.commit("feat: a");
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.1.0\n");
+}
+
+#[test]
+fn version_next_refuses_without_new_commits() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout(&out), "");
+    assert_eq!(
+        stderr(&out),
+        "error: no commits since v1.2.3; nothing to release\n"
+    );
+}
+
+#[test]
+fn version_next_warns_when_latest_tag_differs() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.0.0"]);
+    repo.commit("feat: a");
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.3.0\n");
+    assert_eq!(
+        stderr(&out),
+        "warning: latest tag v1.0.0 differs from version 1.2.3 in the version files\n\
+         Changes: 1 feature since v1.0.0\nLevel: minor\n"
+    );
+}
+
+#[test]
+fn version_next_allows_uncommitted_changes() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    repo.write("package.json", &PACKAGE_JSON.replace("1.2.3", "1.5.0"));
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.6.0\n");
+}
+
+#[test]
+fn version_next_allows_a_detached_head() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    repo.git(&["checkout", "-q", "--detach"]);
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.3.0\n");
+}
+
+#[test]
+fn version_next_refuses_a_shallow_clone_with_version_files() {
+    let source = Repo::new();
+    node_tagged(&source);
+    source.commit("feat: a");
+    let (_holder, clone) = shallow_clone(&source);
+
+    let out = kraken_in(&clone, &["version", "--next"]);
+
+    assert_failed_with(&out, "shallow");
+    assert_eq!(stdout(&out), "");
+}
+
+#[test]
+fn version_next_does_not_ask_origin() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("fix: a");
+    repo.git(&["remote", "add", "origin", "/nonexistent/origin"]);
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_ok(&out);
+    assert!(!stderr(&out).contains("origin"), "{}", stderr(&out));
+}
+
+#[test]
+fn version_next_refuses_an_existing_tag() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.git(&["checkout", "-q", "-b", "other"]);
+    repo.commit("chore: x");
+    repo.git(&["tag", "v1.3.0"]);
+    repo.git(&["checkout", "-q", "main"]);
+    repo.commit("feat: a");
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout(&out), "");
+    assert_eq!(stderr(&out), "error: tag v1.3.0 already exists\n");
+}
+
+#[test]
+fn version_next_refuses_a_version_not_above_the_latest_tag() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.5.0"]);
+    repo.commit("fix: a");
+
+    let out = repo.kraken(&["version", "--next"]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout(&out), "");
+    assert_eq!(
+        stderr(&out),
+        "error: 1.2.4 is not higher than the latest tag v1.5.0; bring the version files up to date first\n"
+    );
+}
+
+#[test]
+fn version_next_makes_no_commit_and_no_tag() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    let head = repo.head();
+    let tags = repo.tags();
+
+    assert_ok(&repo.kraken(&["version", "--next"]));
+
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tags(), tags);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn version_next_takes_no_release_flags() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+
+    for flag in ["--yes", "--dry-run"] {
+        let out = repo.kraken(&["version", "--next", flag]);
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+        assert!(
+            stderr(&out).contains(&format!("unexpected argument '{flag}' found")),
+            "{flag}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+#[test]
+fn version_next_agrees_with_auto() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+
+    let out = repo.kraken(&["version", "--next"]);
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.3.0\n");
+    let next = stdout(&out).trim().to_string();
+    let dry_run = stdout(&repo.kraken(&["auto", "--dry-run"]));
+
+    assert!(
+        dry_run.contains(&format!("  tag v{next}")),
+        "{next}{dry_run}"
+    );
 }
 
 #[test]
@@ -1433,7 +1698,11 @@ fn changelog_takes_no_flags() {
     for flag in ["--yes", "--dry-run", "--no-changelog"] {
         let out = repo.kraken(&["changelog", flag]);
         assert_eq!(out.status.code(), Some(2), "{flag}");
-        assert!(stderr(&out).contains("unexpected argument"), "{flag}");
+        assert!(
+            stderr(&out).contains(&format!("unexpected argument '{flag}' found")),
+            "{flag}: {}",
+            stderr(&out)
+        );
     }
 }
 
