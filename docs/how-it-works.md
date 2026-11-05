@@ -48,6 +48,8 @@ While the major version is 0, a breaking change suggests minor, and so does a fe
 
 The panel's level screen starts on the suggested level and shows the counts in the `Changes` row, such as `2 features, 1 fix since v1.4.2`. The plain output prints the same counts as `Changes:` after `Current version:`. With no commits since the latest tag there is no suggestion, the panel starts on patch, and a release with an explicit level works as before.
 
+`kraken auto` releases at the suggested level and prints it as `Level: minor` after the `Changes:` line. In 0.x with a breaking change it prints `Level: minor (breaking changes bump minor in 0.x)`. With no commits since the latest tag it fails with `no commits since v1.4.2; nothing to release`, before it asks origin, so a second run in CI does not release the same code twice. Everything after the level is the same as for a level given by name.
+
 When the chosen level is lower than the suggestion, also a level from the command line, the confirmation shows `! the new commits suggest a minor release`. With `--yes` or `--dry-run`, kraken prints `warning: the new commits suggest a minor release` to stderr and carries on. A higher level shows no warning.
 
 ## Files it changes

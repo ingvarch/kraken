@@ -12,7 +12,7 @@ kraken releases a project in one command: it bumps the version, commits, tags an
 - Bumps patch, minor or major in `package.json`, `Cargo.toml`, `pyproject.toml`, `deno.json`, `jsr.json`, `gradle.properties`, an Xcode `project.pbxproj`, an XcodeGen `project.yml` or `VERSION`, or works with git tags alone
 - Changes only the version string: comments, quotes and formatting stay
 - Sets the project's own entry in `package-lock.json`, `Cargo.lock` or `uv.lock`, with no network
-- Suggests patch, minor or major from the conventional commits since the latest tag and starts the panel on it
+- Suggests patch, minor or major from the conventional commits since the latest tag and starts the panel on it; `kraken auto --yes` takes it in scripts
 - Refuses a dirty tree, a shallow clone, tags on origin you have not fetched and a version that is not above the latest tag
 - Adds a section to `CHANGELOG.md` from the commits since the last tag. `kraken changelog` creates the file with a line that turns this on; an existing changelog needs that line added
 - Commits, creates an annotated tag and pushes the branch and the tag in one atomic push

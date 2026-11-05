@@ -2,12 +2,14 @@ use std::io::{self, IsTerminal};
 use std::process::ExitCode;
 
 use anyhow::{Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use kraken::changelog::{self, Setup};
+use kraken::commit::Tally;
 use kraken::release::{Current, Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
 use kraken::version::{Level, suggestion_warning};
 use ratatui::crossterm::style::Stylize;
+use semver::Version;
 
 /// Bump the project version, tag the release and push it.
 #[derive(Parser)]
@@ -20,9 +22,9 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// Part of the version to bump; asks when omitted
+    /// Part of the version to bump, or auto to take it from the commits; asks when omitted
     #[arg(value_enum)]
-    level: Option<Level>,
+    level: Option<LevelArg>,
 
     /// Answer yes to every question, including the push to origin
     #[arg(short, long, requires = "level")]
@@ -35,6 +37,14 @@ struct Cli {
     /// Leave CHANGELOG.md out of this release
     #[arg(long)]
     no_changelog: bool,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum LevelArg {
+    Patch,
+    Minor,
+    Major,
+    Auto,
 }
 
 #[derive(Subcommand)]
@@ -62,17 +72,21 @@ fn run(cli: &Cli) -> Result<()> {
         None => {}
     }
     let release = Release::prepare(&std::env::current_dir()?, !cli.no_changelog)?;
+    let level = cli.level.map(|arg| level(arg, &release)).transpose()?;
     if opens_panel(cli, io::stdin().is_terminal(), io::stdout().is_terminal()) {
-        return release_in_panel(&release, cli.level);
+        return release_in_panel(&release, level);
     }
 
     print_summary(&release);
+    if let (Some(LevelArg::Auto), Some(level)) = (cli.level, level) {
+        println!("{}", level_line(level, &release.current, &release.tally()));
+    }
     if let Some(warning) = check_origin(&release)? {
         eprintln!("warning: {warning}");
     }
-    let Some(level) = cli.level else {
+    let Some(level) = level else {
         bail!(
-            "choosing the level needs stdin and stdout to be a terminal; pass patch, minor or major"
+            "choosing the level needs stdin and stdout to be a terminal; pass patch, minor, major or auto"
         );
     };
     if !cli.yes && !cli.dry_run && release.remote_branch.is_some() {
@@ -89,6 +103,25 @@ fn run(cli: &Cli) -> Result<()> {
     }
 
     finish(&release, &plan, true)
+}
+
+fn level(arg: LevelArg, release: &Release) -> Result<Level> {
+    match arg {
+        LevelArg::Patch => Ok(Level::Patch),
+        LevelArg::Minor => Ok(Level::Minor),
+        LevelArg::Major => Ok(Level::Major),
+        LevelArg::Auto => release.auto_level(),
+    }
+}
+
+/// `Level: minor` for the level `suggest` gave, with the reason when a breaking
+/// change bumps only minor in 0.x.
+fn level_line(level: Level, current: &Version, tally: &Tally) -> String {
+    if tally.breaking > 0 && current.major == 0 {
+        format!("Level: {level} (breaking changes bump minor in 0.x)")
+    } else {
+        format!("Level: {level}")
+    }
 }
 
 fn print_version() -> Result<()> {
@@ -268,6 +301,29 @@ mod tests {
     }
 
     #[test]
+    fn level_line_explains_minor_for_a_breaking_change_in_0x() {
+        let tally = Tally {
+            breaking: 1,
+            ..Tally::default()
+        };
+        let line = level_line(Level::Minor, &Version::new(0, 3, 0), &tally);
+
+        assert_eq!(line, "Level: minor (breaking changes bump minor in 0.x)");
+        assert_eq!(
+            level_line(Level::Major, &Version::new(1, 3, 0), &tally),
+            "Level: major"
+        );
+        let features = Tally {
+            features: 1,
+            ..Tally::default()
+        };
+        assert_eq!(
+            level_line(Level::Minor, &Version::new(0, 3, 0), &features),
+            "Level: minor"
+        );
+    }
+
+    #[test]
     fn panel_needs_keys_and_a_screen() {
         assert!(opens_panel(&cli(&[]), true, true));
         assert!(opens_panel(&cli(&["minor"]), true, true));
@@ -279,5 +335,18 @@ mod tests {
     fn yes_and_dry_run_skip_the_panel() {
         assert!(!opens_panel(&cli(&["patch", "--yes"]), true, true));
         assert!(!opens_panel(&cli(&["patch", "--dry-run"]), true, true));
+    }
+
+    #[test]
+    fn auto_is_a_level() {
+        let auto = cli(&["auto", "--yes"]);
+
+        assert!(matches!(auto.level, Some(LevelArg::Auto)));
+        assert!(!opens_panel(&auto, true, true));
+    }
+
+    #[test]
+    fn auto_opens_the_panel_in_a_terminal() {
+        assert!(opens_panel(&cli(&["auto"]), true, true));
     }
 }
