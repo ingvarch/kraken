@@ -47,7 +47,7 @@ kraken
 ╰──────────────────────────────────────────────────────────╯
 ```
 
-Other ways to install, the commands and the flags are in [docs/usage.md](docs/usage.md).
+Other ways to install (cargo, .deb and .rpm packages, archives), the commands and the flags are in [docs/usage.md](docs/usage.md).
 
 ## Quick start
 
