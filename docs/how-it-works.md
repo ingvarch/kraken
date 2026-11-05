@@ -118,7 +118,23 @@ The groups come in the order Breaking, Added, Changed, Fixed. An entry is the de
 - read the version from gradle.properties
 ```
 
-The date is the day kraken starts, in the time zone git gives commits: kraken reads it from `git var GIT_COMMITTER_IDENT`, so `GIT_COMMITTER_DATE` sets it too. kraken puts the section above the first `## ` heading other than `## [Unreleased]`, which in a Keep a Changelog file is the latest release, or at the end of the file when there is no such heading. The rest of the file stays as it is. The panel and `--dry-run` show the section before the release.
+The date is the day kraken starts, in the time zone git gives commits: kraken reads it from `git var GIT_COMMITTER_IDENT`, so `GIT_COMMITTER_DATE` sets it too. kraken puts the section above the first `## ` heading other than `## [Unreleased]`, which in a Keep a Changelog file is the latest release, or at the end of the file, above the link definitions there, when there is no such heading. The rest of the file stays as it is. The panel and `--dry-run` show the section before the release.
+
+### Compare links
+
+Keep a Changelog ends the file with link definitions, so each version heading opens the page that compares it with the previous release. When origin is on github.com, gitlab.com or codeberg.org, a release adds the definition for its version above the latest release's one:
+
+```
+[Unreleased]: https://github.com/o/r/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/o/r/compare/v1.3.0...v1.4.0
+[1.0.0]: https://github.com/o/r/releases/tag/v1.0.0
+```
+
+The link compares the latest final release tag with the new tag, both as they are written, so `v1.3.0` or `1.3.0`. A first release links the tag page. An `[Unreleased]` definition that compares from the previous tag, such as `compare/v1.3.0...HEAD`, moves to the new tag. kraken keeps its label and the part after the tag, and never adds one. A pre-release adds no section, so it adds no link.
+
+The file decides whether it gets links. A file whose link definitions at the end include a version keeps getting them. A file with no release section yet, such as the one `kraken changelog` makes, starts them with its first release. A file with release sections and no version links gets none. To start links in such a file, add the definitions for the past releases, or at least the latest. To stop them, delete the version definitions. `--no-changelog` adds no links.
+
+kraken reads the URL origin pushes to, `git remote get-url --push origin`, with `insteadOf` and `pushInsteadOf` applied. It understands HTTPS, `git@host:owner/repo.git` and `ssh://` URLs, with or without `.git`. For an SSH host it runs `ssh -G`, which reads `~/.ssh/config` and connects to nothing, so `git@github-work:o/r.git` with `HostName github.com` gets GitHub links. It builds the address from the host and the path alone. A user name, password, token or port in the URL never reaches the file or the output. The links need no network. `--dry-run` shows the link lines, and a failed release puts the file back with its links as they were.
 
 ## Commit and tag
 

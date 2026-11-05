@@ -229,6 +229,11 @@ impl Git {
         .is_ok()
     }
 
+    /// The URL git pushes to for `remote`, with `insteadOf` and `pushInsteadOf` applied.
+    pub fn push_url(&self, remote: &str) -> Result<String> {
+        self.run(&["remote", "get-url", "--push", remote])
+    }
+
     pub fn has_remote(&self, name: &str) -> Result<bool> {
         Ok(self.run(&["remote"])?.lines().any(|remote| remote == name))
     }

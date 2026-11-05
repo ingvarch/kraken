@@ -9,6 +9,7 @@ use semver::Version;
 use crate::commit::{Commit, Kind};
 use crate::git::Git;
 use crate::manifest;
+use crate::origin::Pages;
 
 pub const FILE: &str = "CHANGELOG.md";
 
@@ -129,9 +130,53 @@ fn entry(commit: &Commit) -> Option<(Group, Entry)> {
     Some((group, entry))
 }
 
+/// The link definitions at the end of CHANGELOG.md that a release sets, as whole lines.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Links {
+    /// The definition of the new version.
+    pub release: String,
+    /// The `[Unreleased]` definition moved to the new tag, spelled as in the file.
+    pub unreleased: Option<String>,
+}
+
+/// The links a release sets in `changelog`; `None` when the file gets no links.
+/// `previous` is the tag the section starts after, `tag` the new tag.
+pub fn links(
+    changelog: &str,
+    pages: &Pages,
+    version: &Version,
+    previous: Option<&str>,
+    tag: &str,
+) -> Option<Links> {
+    if !takes_links(changelog) {
+        return None;
+    }
+    let unreleased = previous.and_then(|previous| {
+        let from = format!("{}..", pages.compare_prefix(previous));
+        changelog[link_block(changelog)..]
+            .lines()
+            .filter_map(definition)
+            .find(|(label, _)| label.eq_ignore_ascii_case("unreleased"))
+            .and_then(|(label, target)| {
+                let rest = target.strip_prefix(&from)?;
+                Some(format!("[{label}]: {}..{rest}", pages.compare_prefix(tag)))
+            })
+    });
+    Some(Links {
+        release: link_line(version, &pages.release_page(previous, tag)),
+        unreleased,
+    })
+}
+
+/// `[1.4.0]: url`
+pub fn link_line(version: &Version, url: &str) -> String {
+    format!("[{version}]: {url}")
+}
+
 /// `changelog` with `section` above the latest release and below an Unreleased section,
+/// or above the link definitions at the end when there is no release, then `links` set,
 /// in the line endings of `changelog`.
-pub fn insert(changelog: &str, section: &str) -> String {
+pub fn insert(changelog: &str, section: &str, links: Option<&Links>) -> String {
     let newline = if changelog.contains("\r\n") {
         "\r\n"
     } else {
@@ -139,14 +184,96 @@ pub fn insert(changelog: &str, section: &str) -> String {
     };
     let section = section.replace('\n', newline);
     let mut offset = 0;
+    let mut text = None;
     for line in changelog.split_inclusive('\n') {
         if is_release_heading(line) {
             let (before, after) = changelog.split_at(offset);
-            return format!("{before}{section}{newline}{after}");
+            text = Some(format!("{before}{section}{newline}{after}"));
+            break;
         }
         offset += line.len();
     }
-    format!("{}{newline}{newline}{section}", changelog.trim_end())
+    let text = text.unwrap_or_else(|| {
+        let (before, block) = changelog.split_at(link_block(changelog));
+        let gap = if block.is_empty() { "" } else { newline };
+        format!(
+            "{}{newline}{newline}{section}{gap}{block}",
+            before.trim_end()
+        )
+    });
+    match links {
+        Some(links) => set_links(&text, links, newline),
+        None => text,
+    }
+}
+
+/// `text` with the new definition above the first version definition of its link block,
+/// else below `[Unreleased]`, else at the end; and the `[Unreleased]` definition moved.
+fn set_links(text: &str, links: &Links, newline: &str) -> String {
+    let (head, block) = text.split_at(link_block(text));
+    let mut lines: Vec<String> = block.split_inclusive('\n').map(str::to_string).collect();
+    let label = |line: &String| definition(line).map(|(label, _)| label.to_string());
+    let unreleased = lines
+        .iter()
+        .position(|line| label(line).is_some_and(|l| l.eq_ignore_ascii_case("unreleased")));
+    if let (Some(index), Some(moved)) = (unreleased, &links.unreleased) {
+        let ending = &lines[index][lines[index].trim_end().len()..];
+        lines[index] = format!("{moved}{ending}");
+    }
+    let at = lines
+        .iter()
+        .position(|line| label(line).is_some_and(|l| is_version(&l)))
+        .or(unreleased.map(|index| index + 1))
+        .or(lines
+            .iter()
+            .rposition(|line| label(line).is_some())
+            .map(|index| index + 1))
+        .unwrap_or(lines.len());
+    if lines.is_empty() {
+        return format!("{head}{newline}{}{newline}", links.release);
+    }
+    if at > 0 && !lines[at - 1].ends_with('\n') {
+        lines[at - 1].push_str(newline);
+    }
+    lines.insert(at, format!("{}{newline}", links.release));
+    format!("{head}{}", lines.concat())
+}
+
+fn is_version(label: &str) -> bool {
+    Version::parse(label.strip_prefix('v').unwrap_or(label)).is_ok()
+}
+
+/// Whether releases set links: the link block has a version, or there is no release yet.
+fn takes_links(changelog: &str) -> bool {
+    changelog[link_block(changelog)..]
+        .lines()
+        .filter_map(definition)
+        .any(|(label, _)| is_version(label))
+        || !changelog.lines().any(is_release_heading)
+}
+
+/// Where the run of link definitions at the end starts; blank lines may sit between them.
+/// `changelog.len()` without one.
+fn link_block(changelog: &str) -> usize {
+    let mut start = changelog.len();
+    let mut end = changelog.len();
+    for line in changelog.split_inclusive('\n').rev() {
+        end -= line.len();
+        if definition(line).is_some() {
+            start = end;
+        } else if !line.trim().is_empty() {
+            break;
+        }
+    }
+    start
+}
+
+/// The label and target of a link definition such as `[1.4.0]: https://...`; not indented.
+fn definition(line: &str) -> Option<(&str, &str)> {
+    let (label, target) = line.trim_end().strip_prefix('[')?.split_once("]:")?;
+    let target = target.trim();
+    (!label.is_empty() && !label.contains(['[', ']']) && !target.is_empty())
+        .then_some((label, target))
 }
 
 fn is_release_heading(line: &str) -> bool {
@@ -257,6 +384,7 @@ pub fn create(dir: &Path) -> Result<Setup> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::origin::Repo;
 
     fn commit(subject: &str) -> Commit {
         Commit {
@@ -409,7 +537,7 @@ mod tests {
         let changelog = format!("{TEMPLATE}\n## [1.4.0] - 2026-10-01\n\n### Fixed\n\n- b\n");
 
         assert_eq!(
-            insert(&changelog, SECTION),
+            insert(&changelog, SECTION, None),
             format!("{TEMPLATE}\n{SECTION}\n## [1.4.0] - 2026-10-01\n\n### Fixed\n\n- b\n")
         );
     }
@@ -419,7 +547,7 @@ mod tests {
         let changelog = "# Changelog\n\n## [Unreleased]\n\n- c\n\n## [1.4.0] - 2026-10-01\n";
 
         assert_eq!(
-            insert(changelog, SECTION),
+            insert(changelog, SECTION, None),
             format!(
                 "# Changelog\n\n## [Unreleased]\n\n- c\n\n{SECTION}\n## [1.4.0] - 2026-10-01\n"
             )
@@ -428,10 +556,212 @@ mod tests {
 
     #[test]
     fn appends_to_a_changelog_without_releases() {
-        assert_eq!(insert(TEMPLATE, SECTION), format!("{TEMPLATE}\n{SECTION}"));
         assert_eq!(
-            insert("# Changelog\n\n\n", SECTION),
+            insert(TEMPLATE, SECTION, None),
+            format!("{TEMPLATE}\n{SECTION}")
+        );
+        assert_eq!(
+            insert("# Changelog\n\n\n", SECTION, None),
             format!("# Changelog\n\n{SECTION}")
+        );
+    }
+
+    const HOST: &str = "https://github.com/o/r";
+
+    fn pages() -> Pages {
+        Pages::of(&Repo::from_url("https://github.com/o/r").unwrap()).unwrap()
+    }
+
+    fn links_of(changelog: &str, previous: Option<&str>) -> Option<Links> {
+        links(
+            changelog,
+            &pages(),
+            &Version::new(1, 5, 0),
+            previous,
+            "v1.5.0",
+        )
+    }
+
+    fn set(changelog: &str, previous: Option<&str>) -> String {
+        let links = links_of(changelog, previous);
+        insert(changelog, SECTION, links.as_ref())
+    }
+
+    #[test]
+    fn appends_above_the_link_block() {
+        let changelog = format!("{TEMPLATE}\n[Unreleased]: {HOST}/compare/v1.0.0...HEAD\n");
+
+        assert_eq!(
+            insert(&changelog, SECTION, None),
+            format!("{TEMPLATE}\n{SECTION}\n[Unreleased]: {HOST}/compare/v1.0.0...HEAD\n")
+        );
+    }
+
+    #[test]
+    fn starts_links_in_a_changelog_without_releases() {
+        assert_eq!(
+            set(TEMPLATE, None),
+            format!("{TEMPLATE}\n{SECTION}\n[1.5.0]: {HOST}/releases/tag/v1.5.0\n")
+        );
+    }
+
+    #[test]
+    fn adds_the_link_above_the_latest_release_link() {
+        let changelog = format!(
+            "# Changelog\n\n## [1.4.0] - 2026-10-01\n\n- b\n\n[1.4.0]: {HOST}/compare/v1.3.0...v1.4.0\n[1.3.0]: {HOST}/compare/v1.2.0...v1.3.0\n"
+        );
+
+        assert_eq!(
+            set(&changelog, Some("v1.4.0")),
+            format!(
+                "# Changelog\n\n{SECTION}\n## [1.4.0] - 2026-10-01\n\n- b\n\n[1.5.0]: {HOST}/compare/v1.4.0...v1.5.0\n[1.4.0]: {HOST}/compare/v1.3.0...v1.4.0\n[1.3.0]: {HOST}/compare/v1.2.0...v1.3.0\n"
+            )
+        );
+    }
+
+    #[test]
+    fn adds_the_link_below_the_unreleased_link() {
+        let changelog = format!(
+            "# Changelog\n\n## [1.4.0] - 2026-10-01\n\n[1.0.0]: x\n\n[Unreleased]: {HOST}/compare/v1.4.0...HEAD\n"
+        );
+        let only_unreleased = format!(
+            "# Changelog\n\n## [Unreleased]\n\n[1.4.0]: {HOST}/releases/tag/v1.4.0\n[Unreleased]: {HOST}/compare/v1.4.0...HEAD\n"
+        );
+        let links = links_of(&only_unreleased, Some("v1.4.0")).unwrap();
+        let text = insert(&only_unreleased, SECTION, Some(&links));
+
+        assert!(text.ends_with(&format!(
+            "[1.5.0]: {HOST}/compare/v1.4.0...v1.5.0\n[1.4.0]: {HOST}/releases/tag/v1.4.0\n[Unreleased]: {HOST}/compare/v1.5.0...HEAD\n"
+        )), "{text}");
+        let bare = "# Changelog\n\n[Unreleased]: u\n";
+        assert_eq!(
+            set(bare, None),
+            format!(
+                "# Changelog\n\n{SECTION}\n[Unreleased]: u\n[1.5.0]: {HOST}/releases/tag/v1.5.0\n"
+            )
+        );
+        let with_other = "# Changelog\n\n[Unreleased]: u\n[docs]: d\n";
+        assert_eq!(
+            set(with_other, None),
+            format!(
+                "# Changelog\n\n{SECTION}\n[Unreleased]: u\n[1.5.0]: {HOST}/releases/tag/v1.5.0\n[docs]: d\n"
+            )
+        );
+        assert!(links_of(&changelog, Some("v1.4.0")).is_some());
+    }
+
+    #[test]
+    fn moves_the_unreleased_link_to_the_new_tag() {
+        let changelog = format!(
+            "# Changelog\n\n## [1.4.0] - 2026-10-01\n\n[unreleased]: {HOST}/compare/v1.4.0...main\n[1.4.0]: {HOST}/releases/tag/v1.4.0\n"
+        );
+
+        let links = links_of(&changelog, Some("v1.4.0")).unwrap();
+
+        assert_eq!(
+            links.unreleased.as_deref(),
+            Some(format!("[unreleased]: {HOST}/compare/v1.5.0...main").as_str())
+        );
+        assert_eq!(
+            set(&changelog, Some("v1.4.0")),
+            format!(
+                "# Changelog\n\n{SECTION}\n## [1.4.0] - 2026-10-01\n\n[unreleased]: {HOST}/compare/v1.5.0...main\n[1.5.0]: {HOST}/compare/v1.4.0...v1.5.0\n[1.4.0]: {HOST}/releases/tag/v1.4.0\n"
+            )
+        );
+    }
+
+    #[test]
+    fn leaves_an_unreleased_link_from_another_tag_alone() {
+        for target in [
+            format!("{HOST}/compare/v1.3.0...HEAD"),
+            format!("{HOST}/compare/v1.4.01...HEAD"),
+            format!("{HOST}/commits/main"),
+        ] {
+            let changelog = format!(
+                "## [1.4.0] - x\n\n[Unreleased]: {target}\n[1.4.0]: {HOST}/releases/tag/v1.4.0\n"
+            );
+
+            let links = links_of(&changelog, Some("v1.4.0")).unwrap();
+
+            assert_eq!(links.unreleased, None, "{target}");
+            assert!(set(&changelog, Some("v1.4.0")).contains(&format!("[Unreleased]: {target}\n")));
+        }
+    }
+
+    #[test]
+    fn a_first_release_leaves_the_unreleased_link_alone() {
+        let changelog = format!("# Changelog\n\n[Unreleased]: {HOST}/compare/v1.0.0...HEAD\n");
+
+        assert_eq!(links_of(&changelog, None).unwrap().unreleased, None);
+    }
+
+    #[test]
+    fn adds_no_links_to_a_changelog_with_releases_and_no_links() {
+        let changelog = "# Changelog\n\n## [1.4.0] - 2026-10-01\n\n- b\n";
+        let unreleased_only = format!("{changelog}\n[Unreleased]: {HOST}/compare/v1.4.0...HEAD\n");
+
+        assert_eq!(links_of(changelog, Some("v1.4.0")), None);
+        assert_eq!(links_of(&unreleased_only, Some("v1.4.0")), None);
+    }
+
+    #[test]
+    fn version_links_count_with_or_without_v() {
+        for label in ["1.4.0", "v1.4.0"] {
+            let changelog = format!("## [1.4.0] - x\n\n[{label}]: {HOST}/releases/tag/v1.4.0\n");
+
+            assert!(takes_links(&changelog), "{label}");
+        }
+        assert!(!takes_links(
+            "## [1.4.0] - x\n\n[docs]: https://example.com\n"
+        ));
+    }
+
+    #[test]
+    fn finds_the_link_block_across_blank_lines() {
+        let tail = |text: &str| text[link_block(text)..].to_string();
+
+        assert_eq!(tail("text\n\n[a]: x\n\n[b]: y\n"), "[a]: x\n\n[b]: y\n");
+        assert_eq!(tail("text\n[a]: x\n  [b]: y\n"), "");
+        assert_eq!(tail("[a]: x\ntext\n[b]: y"), "[b]: y");
+        assert_eq!(tail("text\n"), "");
+        assert_eq!(tail("[a]: x\n\n\n"), "[a]: x\n\n\n");
+    }
+
+    #[test]
+    fn reads_a_definition() {
+        assert_eq!(
+            definition("[1.0.0]: https://x/y\r\n"),
+            Some(("1.0.0", "https://x/y"))
+        );
+        assert_eq!(definition(" [a]: x"), None);
+        assert_eq!(definition("[a] x"), None);
+        assert_eq!(definition("[]: x"), None);
+        assert_eq!(definition("[a]:"), None);
+    }
+
+    #[test]
+    fn keeps_crlf_line_endings_in_links() {
+        let changelog = format!(
+            "# Changelog\r\n\r\n## [1.4.0] - x\r\n\r\n[Unreleased]: {HOST}/compare/v1.4.0...HEAD\r\n[1.4.0]: {HOST}/releases/tag/v1.4.0\r\n"
+        );
+
+        let text = set(&changelog, Some("v1.4.0"));
+
+        assert!(text.ends_with(&format!(
+            "[Unreleased]: {HOST}/compare/v1.5.0...HEAD\r\n[1.5.0]: {HOST}/compare/v1.4.0...v1.5.0\r\n[1.4.0]: {HOST}/releases/tag/v1.4.0\r\n"
+        )), "{text:?}");
+        assert_eq!(text.matches('\n').count(), text.matches("\r\n").count());
+    }
+
+    #[test]
+    fn ends_a_last_line_without_a_newline() {
+        let changelog = format!("# Changelog\n\n[Unreleased]: {HOST}/x");
+
+        assert_eq!(
+            set(&changelog, None),
+            format!(
+                "# Changelog\n\n{SECTION}\n[Unreleased]: {HOST}/x\n[1.5.0]: {HOST}/releases/tag/v1.5.0\n"
+            )
         );
     }
 
@@ -440,7 +770,7 @@ mod tests {
         let changelog = "# Changelog\r\n\r\n## [1.4.0] - 2026-10-01\r\n";
 
         assert_eq!(
-            insert(changelog, SECTION),
+            insert(changelog, SECTION, None),
             format!(
                 "# Changelog\r\n\r\n{}\r\n## [1.4.0] - 2026-10-01\r\n",
                 SECTION.replace('\n', "\r\n")
