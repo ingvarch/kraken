@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 
@@ -16,8 +16,29 @@ const TYPES: [&str; 11] = [
     "feat", "fix", "build", "chore", "ci", "docs", "perf", "refactor", "revert", "style", "test",
 ];
 
+macro_rules! kraken_line {
+    () => {
+        "<!-- kraken adds a section for every release. Delete this line to stop it. -->"
+    };
+}
+
+/// Releases add sections only to a CHANGELOG.md with this line. GitHub does not show it.
+pub const KRAKEN_LINE: &str = kraken_line!();
+
 /// What `kraken changelog` writes.
-pub const TEMPLATE: &str = "# Changelog\n\nAll notable changes to this project are documented in this file.\nThe format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).\n";
+pub const TEMPLATE: &str = concat!(
+    "# Changelog\n\nAll notable changes to this project are documented in this file.\nThe format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).\n\n",
+    kraken_line!(),
+    "\n"
+);
+
+/// What `kraken changelog` did.
+#[derive(Debug, PartialEq)]
+pub enum Setup {
+    Created,
+    /// CHANGELOG.md was there already, with [`KRAKEN_LINE`].
+    Ready,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Commit {
@@ -164,9 +185,6 @@ fn has_breaking_footer(body: &str) -> bool {
 /// `changelog` with `section` above the latest release and below an Unreleased section,
 /// in the line endings of `changelog`.
 pub fn insert(changelog: &str, section: &str) -> String {
-    if changelog.trim().is_empty() {
-        return format!("{TEMPLATE}\n{section}");
-    }
     let newline = if changelog.contains("\r\n") {
         "\r\n"
     } else {
@@ -237,20 +255,56 @@ fn civil_date(days: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+/// Whether releases add sections to CHANGELOG.md in `root`. Fails on a file with
+/// [`KRAKEN_LINE`] that is not UTF-8, since kraken cannot write to it.
+pub fn is_on(root: &Path) -> Result<bool> {
+    if !is_regular(root) {
+        return Ok(false);
+    }
+    let bytes = fs::read(root.join(FILE)).context(FILE)?;
+    if !has_kraken_line(&bytes) {
+        return Ok(false);
+    }
+    std::str::from_utf8(&bytes).with_context(|| format!("{FILE} is not UTF-8"))?;
+    Ok(true)
+}
+
 /// Whether `root` has CHANGELOG.md, named exactly so. A symlink does not count: git would
 /// commit the link and leave out the file it points to.
-pub fn is_in(root: &Path) -> bool {
+fn is_regular(root: &Path) -> bool {
     manifest::existing(root, FILE).is_some() && !root.join(FILE).is_symlink()
 }
 
-/// Creates CHANGELOG.md in the root of the repository at `dir`.
-pub fn create(dir: &Path) -> Result<()> {
-    let path = Git::discover(dir)?.root().join(FILE);
-    let mut file = match File::create_new(&path) {
-        Err(err) if err.kind() == ErrorKind::AlreadyExists => bail!("{FILE} already exists"),
-        file => file.with_context(|| FILE)?,
-    };
-    file.write_all(TEMPLATE.as_bytes()).with_context(|| FILE)
+/// An indented line does not count.
+fn has_kraken_line(text: &[u8]) -> bool {
+    let text = text.strip_prefix("\u{feff}".as_bytes()).unwrap_or(text);
+    text.split(|&byte| byte == b'\n')
+        .any(|line| line.trim_ascii_end() == KRAKEN_LINE.as_bytes())
+}
+
+/// Creates CHANGELOG.md in the root of the repository at `dir`, or checks the one there.
+pub fn create(dir: &Path) -> Result<Setup> {
+    let git = Git::discover(dir)?;
+    let root = git.root();
+    match File::create_new(root.join(FILE)) {
+        Ok(mut file) => {
+            file.write_all(TEMPLATE.as_bytes()).with_context(|| FILE)?;
+            return Ok(Setup::Created);
+        }
+        Err(err) if err.kind() != ErrorKind::AlreadyExists => return Err(err).context(FILE),
+        Err(_) => {}
+    }
+    if !is_regular(root) {
+        bail!(
+            "{FILE} is a symlink or is spelled in another case; kraken writes only to a regular file named exactly {FILE}"
+        );
+    }
+    if !is_on(root)? {
+        bail!(
+            "{FILE} already exists. To have every release add a section to it, add this line on a line of its own, not indented:\n\n{KRAKEN_LINE}"
+        );
+    }
+    Ok(Setup::Ready)
 }
 
 #[cfg(test)]
@@ -449,9 +503,15 @@ mod tests {
     }
 
     #[test]
-    fn fills_an_empty_file_with_the_template() {
-        assert_eq!(insert("", SECTION), format!("{TEMPLATE}\n{SECTION}"));
-        assert_eq!(insert("\n", SECTION), format!("{TEMPLATE}\n{SECTION}"));
+    fn finds_the_kraken_line() {
+        let has = |text: &str| has_kraken_line(text.as_bytes());
+        assert!(has(TEMPLATE));
+        assert!(has(&format!("# Changelog\r\n\r\n{KRAKEN_LINE}\r\n")));
+        assert!(has(&format!("{KRAKEN_LINE}  \n")));
+        assert!(has(&format!("\u{feff}{KRAKEN_LINE}\n# Changelog\n")));
+        assert!(!has("# Changelog\n"));
+        assert!(!has(&format!("Add `{KRAKEN_LINE}` to it.\n")));
+        assert!(!has(&format!("Add it:\n\n    {KRAKEN_LINE}\n")));
     }
 
     #[test]

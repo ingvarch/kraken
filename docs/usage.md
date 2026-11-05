@@ -13,7 +13,7 @@ Or download an archive for your platform from the [releases](https://github.com/
 ## Commands
 
 ```
-kraken [patch|minor|major] [--yes] [--dry-run]
+kraken [patch|minor|major] [--yes] [--dry-run] [--no-changelog]
 kraken version
 kraken changelog
 ```
@@ -22,8 +22,9 @@ kraken changelog
 - `kraken minor` opens the panel on the confirmation of a minor release.
 - `kraken minor --yes` opens no panel, asks nothing and pushes if `origin` exists. Use this in scripts.
 - `kraken minor --dry-run` shows what would change, with the whole changelog section, and changes nothing.
+- `kraken minor --no-changelog` releases without adding a section to `CHANGELOG.md`. It works with the panel, `--yes` and `--dry-run`.
 - `kraken version` prints the version kraken would release from, for example `1.4.2`, and changes nothing. It needs no clean tree or branch and does not touch the network. In a shallow clone it needs version files, and it cannot compare them with tags the clone did not fetch; with tags alone run `git fetch --unshallow --tags` first. A warning about a differing tag goes to stderr, so `$(kraken version)` holds only the version.
-- `kraken changelog` creates `CHANGELOG.md` in the repository root and changes nothing else. It refuses when the file exists. Commit the file, and every release adds a section to it, see [how-it-works.md](how-it-works.md#changelog).
+- `kraken changelog` creates `CHANGELOG.md` in the repository root and changes nothing else. Commit the file, and every release adds a section to it, see [how-it-works.md](how-it-works.md#changelog). An existing file stays as it is: if it has the kraken line, `kraken changelog` says so; if not, it fails and prints the line to add.
 
 ## Without a terminal
 

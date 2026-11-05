@@ -18,6 +18,8 @@ const PACKAGE_LOCK: &str = r#"{
 const CARGO_TOML: &str = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n";
 const CARGO_LOCK: &str = "version = 4\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\n";
 const TEMPLATE: &str = kraken::changelog::TEMPLATE;
+const KRAKEN_LINE: &str =
+    "<!-- kraken adds a section for every release. Delete this line to stop it. -->";
 const RELEASED_AT: &str = "2026-11-04T12:00:00+0000";
 
 /// Keeps the user's git config (signing, hooks, identity) out of the tests.
@@ -1046,7 +1048,7 @@ fn dry_run_needs_a_level() {
 fn refuses_to_release_files_changed_after_the_start() {
     let repo = Repo::new();
     repo.node();
-    let release = kraken::release::Release::prepare(repo.path()).unwrap();
+    let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
     let plan = release.plan(kraken::version::Level::Patch).unwrap();
     repo.write("package.json", &PACKAGE_JSON.replace("demo", "changed"));
 
@@ -1060,7 +1062,7 @@ fn refuses_to_release_files_changed_after_the_start() {
 fn refuses_to_release_after_a_branch_switch() {
     let repo = Repo::new();
     repo.node();
-    let release = kraken::release::Release::prepare(repo.path()).unwrap();
+    let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
     let plan = release.plan(kraken::version::Level::Patch).unwrap();
     repo.git(&["checkout", "-q", "-b", "other"]);
 
@@ -1074,7 +1076,7 @@ fn refuses_to_release_after_a_branch_switch() {
 fn refuses_to_release_after_a_new_commit() {
     let repo = Repo::new();
     repo.node();
-    let release = kraken::release::Release::prepare(repo.path()).unwrap();
+    let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
     let plan = release.plan(kraken::version::Level::Patch).unwrap();
     repo.write("notes.md", "");
     repo.commit_all();
@@ -1314,14 +1316,80 @@ fn changelog_goes_to_the_repository_root() {
 }
 
 #[test]
-fn changelog_keeps_an_existing_file() {
+fn changelog_puts_the_kraken_line_in_the_new_file() {
+    let repo = Repo::new();
+    repo.node();
+
+    assert_ok(&repo.kraken(&["changelog"]));
+
+    assert!(
+        repo.read("CHANGELOG.md")
+            .lines()
+            .any(|line| line == KRAKEN_LINE),
+        "{}",
+        repo.read("CHANGELOG.md")
+    );
+}
+
+#[test]
+fn changelog_without_the_kraken_line_tells_what_to_add() {
     let repo = Repo::new();
     repo.node();
     repo.write("CHANGELOG.md", "mine\n");
 
-    assert_failed_with(&repo.kraken(&["changelog"]), "CHANGELOG.md already exists");
+    let out = repo.kraken(&["changelog"]);
 
+    assert_failed_with(
+        &out,
+        "CHANGELOG.md already exists. To have every release add a section to it, add this line on a line of its own, not indented:",
+    );
+    assert!(stderr(&out).contains(KRAKEN_LINE), "{}", stderr(&out));
     assert_eq!(repo.read("CHANGELOG.md"), "mine\n");
+}
+
+#[test]
+fn changelog_with_the_kraken_line_is_ready() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+
+    let out = repo.kraken(&["changelog"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains(
+            "CHANGELOG.md has the kraken line. Once it is committed, every release adds a section to it."
+        ),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+}
+
+#[test]
+fn changelog_refuses_a_file_that_is_not_utf8() {
+    let repo = Repo::new();
+    repo.node();
+    fs::write(
+        repo.path().join("CHANGELOG.md"),
+        [TEMPLATE.as_bytes(), b"- J\xf6rg\n"].concat(),
+    )
+    .unwrap();
+
+    assert_failed_with(&repo.kraken(&["changelog"]), "CHANGELOG.md is not UTF-8");
+}
+
+#[test]
+fn changelog_refuses_a_symlink() {
+    let repo = Repo::new();
+    repo.write("docs/changelog.md", TEMPLATE);
+    std::os::unix::fs::symlink("docs/changelog.md", repo.path().join("CHANGELOG.md")).unwrap();
+    repo.node();
+
+    assert_failed_with(
+        &repo.kraken(&["changelog"]),
+        "kraken writes only to a regular file named exactly CHANGELOG.md",
+    );
+    assert_eq!(repo.read("docs/changelog.md"), TEMPLATE);
 }
 
 #[test]
@@ -1341,7 +1409,7 @@ fn changelog_takes_no_flags() {
     let repo = Repo::new();
     repo.node();
 
-    for flag in ["--yes", "--dry-run"] {
+    for flag in ["--yes", "--dry-run", "--no-changelog"] {
         let out = repo.kraken(&["changelog", flag]);
         assert_eq!(out.status.code(), Some(2), "{flag}");
         assert!(stderr(&out).contains("unexpected argument"), "{flag}");
@@ -1501,6 +1569,147 @@ fn changelog_ignores_log_show_signature() {
         stdout(&out)
     );
     assert!(!stdout(&out).contains("signature"), "{}", stdout(&out));
+}
+
+#[test]
+fn release_leaves_a_changelog_without_the_kraken_line_alone() {
+    let by_hand = "# Changelog\n\n## [1.2.3] - 2026-10-01\n\n- by hand\n";
+    let repo = Repo::new();
+    repo.write("CHANGELOG.md", by_hand);
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+    repo.commit("feat: add a command");
+
+    let dry_run = repo.kraken(&["patch", "--dry-run"]);
+    assert_ok(&dry_run);
+    assert!(
+        !stdout(&dry_run).contains("CHANGELOG.md"),
+        "{}",
+        stdout(&dry_run)
+    );
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(repo.read("CHANGELOG.md"), by_hand);
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "package-lock.json\npackage.json"
+    );
+}
+
+#[test]
+fn release_writes_to_your_own_changelog_with_the_kraken_line() {
+    let repo = Repo::new();
+    repo.write(
+        "CHANGELOG.md",
+        &format!(
+            "# Changes\n\n## [Unreleased]\n\n- by hand\n\n{KRAKEN_LINE}\n\n## [1.2.3] - 2026-10-01\n"
+        ),
+    );
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+    repo.commit("fix: handle a crash");
+
+    assert_ok(&repo.kraken_dated(&["patch", "--yes"]));
+
+    assert_eq!(
+        repo.read("CHANGELOG.md"),
+        format!(
+            "# Changes\n\n## [Unreleased]\n\n- by hand\n\n{KRAKEN_LINE}\n\n## [1.2.4] - 2026-11-04\n\n### Fixed\n\n- handle a crash\n\n## [1.2.3] - 2026-10-01\n"
+        )
+    );
+}
+
+#[test]
+fn release_refuses_a_changelog_that_is_not_utf8() {
+    let repo = Repo::new();
+    fs::write(
+        repo.path().join("CHANGELOG.md"),
+        [TEMPLATE.as_bytes(), b"- J\xf6rg\n"].concat(),
+    )
+    .unwrap();
+    repo.node();
+
+    assert_failed_with(
+        &repo.kraken(&["patch", "--yes"]),
+        "CHANGELOG.md is not UTF-8",
+    );
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn release_ignores_a_changelog_without_the_kraken_line_that_is_not_utf8() {
+    let repo = Repo::new();
+    fs::write(repo.path().join("CHANGELOG.md"), b"- J\xf6rg\n").unwrap();
+    repo.node();
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(
+        fs::read(repo.path().join("CHANGELOG.md")).unwrap(),
+        b"- J\xf6rg\n"
+    );
+}
+
+#[test]
+fn untracked_changelog_without_the_kraken_line_does_not_stop_a_release() {
+    let repo = Repo::new();
+    repo.node();
+    repo.write("CHANGELOG.md", "mine\n");
+
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
+
+    assert_eq!(repo.read("CHANGELOG.md"), "mine\n");
+    assert_eq!(repo.status(), "?? CHANGELOG.md");
+}
+
+#[test]
+fn no_changelog_releases_without_the_changelog() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: add a command");
+
+    let dry_run = repo.kraken(&["patch", "--dry-run", "--no-changelog"]);
+    assert_ok(&dry_run);
+    assert!(
+        !stdout(&dry_run).contains("CHANGELOG.md"),
+        "{}",
+        stdout(&dry_run)
+    );
+
+    assert_ok(&repo.kraken(&["patch", "--yes", "--no-changelog"]));
+
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "package-lock.json\npackage.json"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn no_changelog_releases_past_an_untracked_changelog() {
+    let repo = Repo::new();
+    repo.node();
+    repo.write("CHANGELOG.md", TEMPLATE);
+
+    assert_ok(&repo.kraken(&["patch", "--yes", "--no-changelog"]));
+
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert_eq!(repo.status(), "?? CHANGELOG.md");
+    assert!(repo.tags().contains(&"v1.2.4".to_string()));
+}
+
+#[test]
+fn no_changelog_works_without_a_level() {
+    let repo = Repo::new();
+    repo.node();
+
+    assert_failed_with(
+        &repo.kraken(&["--no-changelog"]),
+        "choosing the level needs stdin and stdout to be a terminal",
+    );
 }
 
 #[test]

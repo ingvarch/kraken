@@ -32,11 +32,17 @@ kraken takes the current version from those files, or from the highest `X.Y.Z` /
 
 ## Files it changes
 
-kraken rewrites only the version string; comments, quotes and formatting stay as they were. It sets the project's own entry in the lock file, if there is one: `package-lock.json`, `Cargo.lock` or `uv.lock`. For XcodeGen, the generated `<name>.xcodeproj/project.pbxproj`, named after `name` in `project.yml`, plays the lock file's part and gets the same version; other Xcode projects stay as they are. Nothing else in the lock file changes, and no network is needed. For Cargo, kraken reads the workspace members with `cargo metadata --no-deps` and refuses a version that a path dependency inside the workspace would not accept. If the repository root has a `CHANGELOG.md`, kraken adds a section to it, see [Changelog](#changelog).
+kraken rewrites only the version string; comments, quotes and formatting stay as they were. It sets the project's own entry in the lock file, if there is one: `package-lock.json`, `Cargo.lock` or `uv.lock`. For XcodeGen, the generated `<name>.xcodeproj/project.pbxproj`, named after `name` in `project.yml`, plays the lock file's part and gets the same version; other Xcode projects stay as they are. Nothing else in the lock file changes, and no network is needed. For Cargo, kraken reads the workspace members with `cargo metadata --no-deps` and refuses a version that a path dependency inside the workspace would not accept. If the repository root has a `CHANGELOG.md` with the kraken line, kraken adds a section to it, see [Changelog](#changelog).
 
 ## Changelog
 
-`kraken changelog` creates `CHANGELOG.md` in the repository root with a short header. Once the file is committed, every release adds a section to it. A `CHANGELOG.md` you wrote yourself works the same way. The name must be exactly `CHANGELOG.md`, and a symlink does not count. If git does not track the file, kraken refuses to release until you commit it.
+`kraken changelog` creates `CHANGELOG.md` in the repository root with a short header and this line:
+
+```
+<!-- kraken adds a section for every release. Delete this line to stop it. -->
+```
+
+Once the file is committed, every release adds a section to it. kraken writes only to a `CHANGELOG.md` that has this line, so a changelog kept by hand or by another tool stays as it is. GitHub does not show the line. To have kraken write to your own changelog, add the line to it on a line of its own, not indented; to stop kraken, delete the line. `--no-changelog` leaves the file out of one release. The name must be exactly `CHANGELOG.md`, a symlink does not count, and a file with the line must be UTF-8. If git does not track a `CHANGELOG.md` with the line, kraken refuses to release until you commit it.
 
 The section lists the commits since the latest release tag, or every commit for a first release, oldest first and without merge commits. kraken reads each subject as a conventional commit, `type(scope): description`, with one of the standard types:
 
@@ -59,7 +65,7 @@ The groups come in the order Breaking, Added, Changed, Fixed. An entry is the de
 - read the version from gradle.properties
 ```
 
-The date is the day kraken starts, in the time zone git gives commits: kraken reads it from `git var GIT_COMMITTER_IDENT`, so `GIT_COMMITTER_DATE` sets it too. kraken puts the section above the first `## ` heading other than `## [Unreleased]`, which in a Keep a Changelog file is the latest release, or at the end of the file when there is no such heading. The rest of the file stays as it is. An empty file gets the header first. The panel and `--dry-run` show the section before the release.
+The date is the day kraken starts, in the time zone git gives commits: kraken reads it from `git var GIT_COMMITTER_IDENT`, so `GIT_COMMITTER_DATE` sets it too. kraken puts the section above the first `## ` heading other than `## [Unreleased]`, which in a Keep a Changelog file is the latest release, or at the end of the file when there is no such heading. The rest of the file stays as it is. The panel and `--dry-run` show the section before the release.
 
 ## Commit and tag
 
