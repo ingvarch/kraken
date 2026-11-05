@@ -160,17 +160,10 @@ fn php_string(text: &str, out: &mut String) {
 
 fn lock_hash(lock: &str) -> Result<Option<String>> {
     let root = package_json::parse(lock)?;
-    let Some(prop) = root
-        .object_value()
-        .and_then(|object| object.get("content-hash"))
-    else {
-        return Ok(None);
-    };
-    let literal = prop
-        .value()
-        .and_then(|value| value.as_string_lit())
-        .context("\"content-hash\" is not a string")?;
-    Ok(Some(literal.decoded_value()?))
+    match root.object_value() {
+        Some(object) => package_json::string_field(&object, "content-hash"),
+        None => Ok(None),
+    }
 }
 
 /// The `composer.lock` next to `composer.json`, after checking that its `content-hash` is the one kraken computes.
@@ -195,7 +188,7 @@ pub fn set_lock_hash(root: &Path, lock: &str) -> Result<String> {
     let hash = content_hash(&composer).context(FILE)?;
     let parsed = package_json::parse(lock)?;
     package_json::set_string(parsed.object_value(), "content-hash", &hash);
-    Ok(parsed.to_string())
+    Ok(package_json::render(lock, &parsed))
 }
 
 #[cfg(test)]
@@ -372,6 +365,16 @@ mod tests {
         let old = lock("0123456789abcdef0123456789abcdef");
         let expected = old.replace("0123456789abcdef0123456789abcdef", HASH);
         assert_eq!(set_lock_hash(dir.path(), &old).unwrap(), expected);
+    }
+
+    #[test]
+    fn sets_the_content_hash_of_a_lock_with_a_bom() {
+        let dir = project(COMPOSER, None);
+        let old = format!("\u{feff}{}", lock(HASH_124));
+        assert_eq!(
+            set_lock_hash(dir.path(), &old).unwrap(),
+            old.replace(HASH_124, HASH)
+        );
     }
 
     #[test]

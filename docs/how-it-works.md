@@ -20,6 +20,7 @@ kraken looks for version files in the repository root:
 | `gradle.properties` | the `version` line |
 | `pubspec.yaml` | the top-level `version`, up to the `+` |
 | `composer.json` | the top-level `version`, when it is set |
+| `manifest.json` (browser extension, with `manifest_version`) | the top-level `version`, and `version_name` when it equals `version` |
 | `project.yml` (XcodeGen) | every `MARKETING_VERSION:` line |
 | `<Name>.xcodeproj/project.pbxproj` | every `MARKETING_VERSION` line |
 | `VERSION` | the whole file: the text without the whitespace around it |

@@ -2694,3 +2694,88 @@ fn composer_json_without_a_version_releases_from_tags() {
     assert_eq!(repo.tag_commit("v0.4.1"), head);
     assert_eq!(repo.head(), head);
 }
+
+const EXTENSION_JSON: &str =
+    "{\n  \"manifest_version\": 3,\n  \"name\": \"Demo\",\n  \"version\": \"1.2.3\"\n}\n";
+
+#[test]
+fn web_extension_patch_release_with_package_json() {
+    let repo = Repo::new();
+    repo.write("manifest.json", EXTENSION_JSON);
+    repo.node();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("manifest.json"),
+        EXTENSION_JSON.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.read("package.json"),
+        PACKAGE_JSON.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.read("package-lock.json"),
+        PACKAGE_LOCK.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "manifest.json\npackage-lock.json\npackage.json"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+}
+
+#[test]
+fn web_app_manifest_leaves_a_node_release_alone() {
+    const PWA: &str =
+        "{\n  \"name\": \"App\",\n  \"start_url\": \"/\",\n  \"version\": \"9.9.9\"\n}\n";
+    let repo = Repo::new();
+    repo.write("manifest.json", PWA);
+    repo.node();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.read("manifest.json"), PWA);
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "package-lock.json\npackage.json"
+    );
+}
+
+#[test]
+fn a_manifest_json_that_is_not_json_leaves_a_node_release_alone() {
+    const JEKYLL: &str =
+        "---\nlayout: null\n---\n{\n  \"name\": \"{{ site.title }}\",\n  \"start_url\": \"/\"\n}\n";
+    let repo = Repo::new();
+    repo.write("manifest.json", JEKYLL);
+    repo.node();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.read("manifest.json"), JEKYLL);
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "package-lock.json\npackage.json"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+}
+
+#[test]
+fn refuses_a_two_number_extension_version() {
+    let repo = Repo::new();
+    repo.write("manifest.json", &EXTENSION_JSON.replace("1.2.3", "1.0"));
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_failed_with(&out, "manifest.json: \"1.0\" is not an X.Y.Z version");
+    assert_eq!(
+        repo.read("manifest.json"),
+        EXTENSION_JSON.replace("1.2.3", "1.0")
+    );
+    assert_eq!(repo.status(), "");
+    assert!(repo.tags().is_empty());
+}
