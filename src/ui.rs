@@ -9,8 +9,9 @@ use semver::Version;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::changelog::Section;
+use crate::commit::Tally;
 use crate::release::{Plan, push_target};
-use crate::version::{Level, bump};
+use crate::version::{Level, bump, suggest, suggestion_warning};
 
 const MAX_WIDTH: u16 = 64;
 const MIN_WIDTH: u16 = 44;
@@ -27,6 +28,8 @@ pub struct Facts {
     /// The branch on origin to push to; `None` without an origin remote.
     pub remote_branch: Option<String>,
     pub warnings: Vec<String>,
+    /// The commits since the latest tag.
+    pub commits: Tally,
 }
 
 /// A level and what releasing it would do, or why it cannot be released.
@@ -60,6 +63,7 @@ impl App {
     /// Starts on the confirmation of `level` when it is given.
     pub fn new(facts: Facts, choices: Vec<Choice>, level: Option<Level>) -> App {
         let selected = level
+            .or_else(|| suggest(&facts.current, &facts.commits))
             .and_then(|level| choices.iter().position(|choice| choice.level == level))
             .unwrap_or(0);
         App {
@@ -169,7 +173,7 @@ impl App {
         lines.push(Line::default());
         let hints = match self.screen {
             Screen::Choose => {
-                self.choose_lines(&mut lines);
+                self.choose_lines(&mut lines, width);
                 hints(&[("↑↓", "choose"), ("enter", "continue"), ("esc", "quit")])
             }
             Screen::Confirm => self.confirm_lines(&mut lines, width, room),
@@ -190,7 +194,17 @@ impl App {
         };
         let mut lines = row("Version", &version, width, Style::new());
         lines.extend(row("Branch", &branch, width, Style::new()));
-        for warning in &facts.warnings {
+        if self.screen == Screen::Choose {
+            let changes = facts.commits.summary(facts.latest_tag.as_deref());
+            lines.extend(row("Changes", &changes, width, Style::new()));
+        }
+        let suggestion = (self.screen == Screen::Confirm)
+            .then(|| {
+                let level = self.choices[self.selected].level;
+                suggestion_warning(level, suggest(&facts.current, &facts.commits))
+            })
+            .flatten();
+        for warning in facts.warnings.iter().chain(&suggestion) {
             let mut text = wrap(&format!("! {warning}"), width);
             if text.len() > WARNING_LINES {
                 text.truncate(WARNING_LINES);
@@ -202,7 +216,7 @@ impl App {
         lines
     }
 
-    fn choose_lines(&self, lines: &mut Vec<Line<'static>>) {
+    fn choose_lines(&self, lines: &mut Vec<Line<'static>>, width: usize) {
         lines.push(Line::from("Next version").bold());
         let versions: Vec<String> = self
             .choices
@@ -225,6 +239,13 @@ impl App {
                 ),
                 Span::styled(format!("   {}", meaning(choice.level)), Style::new().dim()),
             ]));
+        }
+        if self.facts.current.major == 0 && self.facts.commits.breaking > 0 {
+            lines.extend(
+                wrap("Breaking changes bump minor in 0.x", width)
+                    .into_iter()
+                    .map(|line| Line::from(line).dim()),
+            );
         }
     }
 
@@ -503,7 +524,21 @@ mod tests {
             branch: "main".to_string(),
             remote_branch: Some("main".to_string()),
             warnings: vec![],
+            commits: Tally::default(),
         }
+    }
+
+    fn tally(breaking: usize, features: usize, fixes: usize, other: usize) -> Tally {
+        Tally {
+            breaking,
+            features,
+            fixes,
+            other,
+        }
+    }
+
+    fn facts_with(commits: Tally) -> Facts {
+        Facts { commits, ..facts() }
     }
 
     fn plan(version: &str) -> Plan {
@@ -981,5 +1016,110 @@ mod tests {
         assert_shows(&app, "! push failed");
         assert_hides(&app, "line 12");
         assert_hides(&app, "too small");
+    }
+
+    #[test]
+    fn shows_the_changes_since_the_latest_tag() {
+        let app = App::new(facts_with(tally(0, 2, 1, 0)), choices(), None);
+        assert_shows(&app, "Changes   2 features, 1 fix since v1.2.3");
+    }
+
+    #[test]
+    fn says_none_without_new_commits() {
+        let app = app();
+        assert_shows(&app, "Changes   none since v1.2.3");
+        assert_shows(&app, "❯ patch");
+    }
+
+    #[test]
+    fn preselects_the_suggested_level() {
+        let features = App::new(facts_with(tally(0, 2, 1, 0)), choices(), None);
+        assert_shows(&features, "❯ minor");
+        let breaking = App::new(facts_with(tally(1, 0, 0, 0)), choices(), None);
+        assert_shows(&breaking, "❯ major");
+    }
+
+    #[test]
+    fn changes_row_stays_off_the_confirmation() {
+        let mut app = App::new(facts_with(tally(0, 1, 0, 0)), choices(), None);
+        press(&mut app, KeyCode::Enter);
+        assert_shows(&app, "Release v1.3.0");
+        assert_hides(&app, "Changes");
+    }
+
+    #[test]
+    fn notes_the_0x_rule() {
+        let mut facts = facts_with(tally(1, 2, 0, 0));
+        facts.current = v("0.3.0");
+        let app = App::new(facts, choices(), None);
+        assert_shows(&app, "Changes   1 breaking change, 2 features since v1.2.3");
+        assert_shows(&app, "❯ minor");
+        assert_shows(&app, "Breaking changes bump minor in 0.x");
+    }
+
+    #[test]
+    fn no_0x_note_without_a_breaking_change() {
+        let mut facts = facts_with(tally(0, 2, 0, 0));
+        facts.current = v("0.3.0");
+        assert_hides(&App::new(facts, choices(), None), "bump minor in 0.x");
+        let breaking = App::new(facts_with(tally(1, 0, 0, 0)), choices(), None);
+        assert_hides(&breaking, "bump minor in 0.x");
+    }
+
+    #[test]
+    fn warns_when_the_given_level_is_below_the_suggestion() {
+        let app = App::new(facts_with(tally(0, 1, 0, 0)), choices(), Some(Level::Patch));
+        assert_shows(&app, "! the new commits suggest a minor release");
+    }
+
+    #[test]
+    fn warns_after_moving_below_the_suggestion() {
+        let mut app = App::new(facts_with(tally(0, 1, 0, 0)), choices(), None);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Enter);
+        assert_shows(&app, "! the new commits suggest a minor release");
+    }
+
+    #[test]
+    fn no_warning_at_or_above_the_suggestion() {
+        for level in [Level::Minor, Level::Major] {
+            let app = App::new(facts_with(tally(0, 1, 0, 0)), choices(), Some(level));
+            assert_hides(&app, "suggest");
+        }
+    }
+
+    #[test]
+    fn no_warning_on_the_level_screen() {
+        let mut app = App::new(facts_with(tally(0, 1, 0, 0)), choices(), None);
+        press(&mut app, KeyCode::Up);
+        assert_hides(&app, "suggest");
+    }
+
+    #[test]
+    fn level_screen_fits_44_by_14() {
+        let mut facts = facts_with(tally(0, 1, 0, 0));
+        facts.remote_branch = None;
+        let app = App::new(facts, choices(), None);
+        let screen = screen_sized(&app, 44, 14);
+        assert!(!screen.contains("too small"), "{screen}");
+        assert!(
+            screen.contains("Changes   1 feature since v1.2.3"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn suggestion_warning_with_a_long_warning_fits_a_standard_terminal() {
+        let mut facts = facts_with(tally(0, 1, 0, 0));
+        facts.warnings = vec![git_rejection()];
+        let mut choices = choices();
+        if let Ok(plan) = &mut choices[0].plan {
+            plan.untracked = vec!["Cargo.lock".to_string()];
+        }
+        let app = App::new(facts, choices, Some(Level::Patch));
+
+        assert_hides(&app, "too small");
+        assert_shows(&app, "! the new commits suggest a minor release");
+        assert_shows(&app, "enter release");
     }
 }

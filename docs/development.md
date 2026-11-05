@@ -34,6 +34,7 @@ goreleaser release --snapshot --clean
 - `src/ui.rs`: the ratatui panel.
 - `src/release.rs`: checks the repository, plans the release, writes the files, commits, tags, pushes and rolls back.
 - `src/manifest.rs` and `src/manifest/`: version files and lock files, one module per format.
+- `src/commit.rs`: conventional commits, read the same way for the changelog and the suggested level.
 - `src/changelog.rs`: the changelog section from the commits, and `kraken changelog`.
 - `src/version.rs`: versions, levels and release tags.
 - `src/git.rs`: the git commands kraken runs.

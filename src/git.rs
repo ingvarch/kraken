@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use crate::changelog::Commit;
 use crate::cmd;
+use crate::commit::Commit;
 
 pub struct Git {
     root: PathBuf,

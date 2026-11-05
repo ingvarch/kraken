@@ -28,7 +28,27 @@ kraken skips a version file that git ignores, such as an Xcode project that a to
 
 ## Current and next version
 
-kraken takes the current version from those files, or from the highest `X.Y.Z` / `vX.Y.Z` tag reachable from HEAD. It warns when the files and the latest tag disagree, and refuses a new version that is not higher than the latest tag. Then it asks for patch, minor or major. `kraken version` prints the current version and changes nothing. It skips the branch, clean-tree and origin checks, and refuses a shallow clone only when the version comes from tags.
+kraken takes the current version from those files, or from the highest `X.Y.Z` / `vX.Y.Z` tag reachable from HEAD. It warns when the files and the latest tag disagree, and refuses a new version that is not higher than the latest tag. Then it asks for patch, minor or major and starts on the level the commits suggest, see [Suggested level](#suggested-level). `kraken version` prints the current version and changes nothing. It skips the branch, clean-tree and origin checks, and refuses a shallow clone only when the version comes from tags.
+
+## Suggested level
+
+kraken reads the commits from the latest release tag to HEAD, or every commit when there is no release tag. Merge commits do not count; the commits they bring in do. With squash merges the pull request title is the subject, so it decides. It reads each commit by the same rules as the changelog, and the highest level wins:
+
+| Commit | Kind | Level |
+|---|---|---|
+| any type with `!`, or a `BREAKING CHANGE:` or `BREAKING-CHANGE:` footer | breaking change | major, minor while the major version is 0 |
+| `feat` | feature | minor |
+| `fix` | fix | patch |
+| `build`, `chore`, `ci`, `docs`, `perf`, `refactor`, `revert`, `style`, `test` | other commit | patch |
+| any other subject | other commit | patch |
+
+A footer under a subject that is not a conventional commit does not count.
+
+While the major version is 0, a breaking change suggests minor, and so does a feature. Semver lets anything change before 1.0.0, and Cargo and npm treat a 0.x minor bump as breaking. kraken never suggests 1.0.0. Choose `major` when you are ready to leave 0.x.
+
+The panel's level screen starts on the suggested level and shows the counts in the `Changes` row, such as `2 features, 1 fix since v1.4.2`. The plain output prints the same counts as `Changes:` after `Current version:`. With no commits since the latest tag there is no suggestion, the panel starts on patch, and a release with an explicit level works as before.
+
+When the chosen level is lower than the suggestion, also a level from the command line, the confirmation shows `! the new commits suggest a minor release`. With `--yes` or `--dry-run`, kraken prints `warning: the new commits suggest a minor release` to stderr and carries on. A higher level shows no warning.
 
 ## Files it changes
 

@@ -6,9 +6,10 @@ use anyhow::{Context, Result, bail};
 use semver::Version;
 
 use crate::changelog::{self, Changes, Section};
+use crate::commit::Tally;
 use crate::git::Git;
 use crate::manifest::{self, Manifest};
-use crate::version::{Level, bump, latest_release_tag, release_tag_version};
+use crate::version::{Level, bump, latest_release_tag, release_tag_version, suggest};
 
 const ORIGIN: &str = "origin";
 
@@ -23,8 +24,10 @@ pub struct Release {
     pub branch: String,
     /// The branch on origin to push to; `None` without an origin remote.
     pub remote_branch: Option<String>,
-    /// What goes into the changelog; `None` when the release leaves CHANGELOG.md alone.
-    changes: Option<Changes>,
+    /// The commits since the latest tag.
+    changes: Changes,
+    /// Release date; set only when the release adds a section to CHANGELOG.md.
+    date: Option<String>,
 }
 
 /// The version kraken releases from, read without changing or fetching anything.
@@ -95,14 +98,12 @@ impl Release {
             git.upstream(&branch, ORIGIN)
                 .unwrap_or_else(|| branch.clone())
         });
-        let changes = if with_changelog && changelog::is_on(git.root())? {
-            let tag = latest.as_ref().map(|(tag, _)| tag.as_str());
-            Some(Changes {
-                date: changelog::ident_date(&git.committer_ident()?)?,
-                commits: git.commits_since(tag)?,
-            })
-        } else {
-            None
+        let writes_changelog = with_changelog && changelog::is_on(git.root())?;
+        let date = writes_changelog
+            .then(|| changelog::ident_date(&git.committer_ident()?))
+            .transpose()?;
+        let changes = Changes {
+            commits: git.commits_since(latest.as_ref().map(|(tag, _)| tag.as_str()))?,
         };
         Ok(Release {
             git,
@@ -113,7 +114,17 @@ impl Release {
             branch,
             remote_branch,
             changes,
+            date,
         })
+    }
+
+    pub fn tally(&self) -> Tally {
+        Tally::of(&self.changes.commits)
+    }
+
+    /// The level the commits since the latest tag call for.
+    pub fn suggested(&self) -> Option<Level> {
+        suggest(&self.current, &self.tally())
     }
 
     pub fn latest_tag(&self) -> Option<&str> {
@@ -163,9 +174,9 @@ impl Release {
             files.extend(manifest.lock.clone());
         }
         let section = self
-            .changes
-            .as_ref()
-            .map(|changes| changes.section(&version));
+            .date
+            .clone()
+            .map(|date| self.changes.section(&version, date));
         if section.is_some() {
             files.push(changelog::FILE.to_string());
         }

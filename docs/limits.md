@@ -6,6 +6,8 @@ What kraken does not support. What it does support is in [how-it-works.md](how-i
 - kraken does not change dependency requirements. If `app` depends on `engine = { path = "../engine", version = "0.1.0" }`, a bump to 0.2.0 is refused until you update the requirement.
 - Only `X.Y.Z` versions. Pre-release (`1.0.0-rc.1`) and build metadata are rejected; pre-release tags are ignored.
 - No GitHub releases.
+- The suggested level comes from the commit subjects and `BREAKING CHANGE:` footers. kraken does not compare the code or the public API.
+- kraken never suggests 1.0.0: leave 0.x with `major` when you are ready.
 - Changelog entries are the commit subjects as they are; kraken does not let you edit them before the release.
 - Only `CHANGELOG.md` in the repository root, as a regular file. kraken does not read `changelog.md`, `CHANGES.md`, `HISTORY.md`, a changelog in a subdirectory or a `CHANGELOG.md` that is a symlink.
 - kraken takes the first `## ` heading other than `## [Unreleased]` for the latest release. In a changelog that uses `##` for something else above the releases, such as `## Notes`, the new section goes above that heading.

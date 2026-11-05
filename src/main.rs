@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use kraken::changelog::{self, Setup};
 use kraken::release::{Current, Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
-use kraken::version::Level;
+use kraken::version::{Level, suggestion_warning};
 use ratatui::crossterm::style::Stylize;
 
 /// Bump the project version, tag the release and push it.
@@ -78,6 +78,9 @@ fn run(cli: &Cli) -> Result<()> {
     if !cli.yes && !cli.dry_run && release.remote_branch.is_some() {
         bail!("asking about the push needs stdin and stdout to be a terminal; pass --yes to push");
     }
+    if let Some(warning) = suggestion_warning(level, release.suggested()) {
+        eprintln!("warning: {warning}");
+    }
     let plan = release.plan(level)?;
 
     if cli.dry_run {
@@ -142,6 +145,7 @@ fn release_in_panel(release: &Release, level: Option<Level>) -> Result<()> {
         branch: release.branch.clone(),
         remote_branch: release.remote_branch.clone(),
         warnings,
+        commits: release.tally(),
     };
     let choices = Level::ALL
         .iter()
@@ -226,6 +230,7 @@ fn print_summary(release: &Release) {
         println!("Version files: {}", names.join(", "));
     }
     println!("Current version: {}", release.current);
+    println!("Changes: {}", release.tally().summary(release.latest_tag()));
     if let Some(warning) = release.warning() {
         eprintln!("warning: {warning}");
     }
