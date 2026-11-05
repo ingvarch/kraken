@@ -20,6 +20,7 @@ kraken releases a project in one command: it bumps the version, commits, tags an
 - Commits, creates an annotated tag and pushes the branch and the tag in one atomic push
 - Puts HEAD and the files back if anything fails before the tag
 - `kraken undo` removes a release that is not pushed yet
+- Completions for bash, zsh and fish: `kraken completions fish | source`
 - A full-screen panel for releases by hand, `--yes` and `--dry-run` for scripts
 
 ## Usage

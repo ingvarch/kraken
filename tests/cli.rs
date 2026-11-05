@@ -51,7 +51,8 @@ const RELEASED_AT: &str = "2026-11-04T12:00:00+0000";
 
 /// Keeps the user's git config (signing, hooks, identity) out of the tests.
 fn isolate(cmd: &mut Command) -> &mut Command {
-    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+    cmd.env_remove("COMPLETE")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_AUTHOR_NAME", "Test")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
@@ -5556,4 +5557,143 @@ fn github_release_is_a_flag_of_the_release_only() {
         let out = repo.kraken(args);
         assert_failed_with(&out, "unexpected argument '--github-release'");
     }
+}
+
+fn completions_in_empty_dir(args: &[&str]) -> Output {
+    let dir = TempDir::new().unwrap();
+    isolate(Command::new(env!("CARGO_BIN_EXE_kraken")).args(args))
+        .current_dir(dir.path())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn completions_print_a_script_for_each_shell() {
+    for (shell, registers) in [
+        ("bash", "-F _clap_complete_kraken kraken\n"),
+        ("zsh", "compdef _clap_dynamic_completer_kraken kraken\n"),
+        ("fish", "--command kraken --arguments"),
+    ] {
+        let out = completions_in_empty_dir(&["completions", shell]);
+
+        assert_ok(&out);
+        let script = stdout(&out);
+        assert!(script.contains(registers), "{shell}:\n{script}");
+        assert!(
+            !script.contains(env!("CARGO_BIN_EXE_kraken")),
+            "{shell} script holds the binary path:\n{script}"
+        );
+    }
+}
+
+#[test]
+fn complete_env_names_kraken_not_the_binary_path() {
+    let dir = TempDir::new().unwrap();
+    let out = isolate(&mut Command::new(env!("CARGO_BIN_EXE_kraken")))
+        .env("COMPLETE", "bash")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert_ok(&out);
+    let script = stdout(&out);
+    assert!(
+        script.contains("-F _clap_complete_kraken kraken\n"),
+        "{script}"
+    );
+    assert!(
+        !script.contains(env!("CARGO_BIN_EXE_kraken")),
+        "script holds the binary path:\n{script}"
+    );
+}
+
+#[test]
+fn complete_env_refuses_other_shells() {
+    let dir = TempDir::new().unwrap();
+    let out = isolate(Command::new(env!("CARGO_BIN_EXE_kraken")).args(["--", "kraken", ""]))
+        .env("COMPLETE", "elvish")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(err.contains("unknown shell"), "{err}");
+    for shell in ["bash", "zsh", "fish"] {
+        assert!(err.contains(shell), "{err}");
+    }
+}
+
+#[test]
+fn completions_refuse_other_shells() {
+    let out = completions_in_empty_dir(&["completions", "elvish"]);
+
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    for shell in ["bash", "zsh", "fish"] {
+        assert!(err.contains(shell), "{err}");
+    }
+}
+
+fn complete_fish(words: &[&str]) -> Vec<String> {
+    let dir = TempDir::new().unwrap();
+    let out = isolate(
+        Command::new(env!("CARGO_BIN_EXE_kraken"))
+            .arg("--")
+            .args(words),
+    )
+    .env("COMPLETE", "fish")
+    .current_dir(dir.path())
+    .output()
+    .unwrap();
+    assert_ok(&out);
+    stdout(&out)
+        .lines()
+        .map(|line| line.split('\t').next().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn completions_answer_from_the_cli() {
+    let top = complete_fish(&["kraken", ""]);
+    for word in [
+        "patch",
+        "minor",
+        "major",
+        "auto",
+        "version",
+        "changelog",
+        "undo",
+        "completions",
+    ] {
+        assert!(top.contains(&word.to_string()), "{word} in {top:?}");
+    }
+
+    let flags = complete_fish(&["kraken", "minor", "--"]);
+    for flag in ["--yes", "--dry-run", "--no-changelog"] {
+        assert!(flags.contains(&flag.to_string()), "{flag} in {flags:?}");
+    }
+
+    let shells = complete_fish(&["kraken", "completions", ""]);
+    for shell in ["bash", "zsh", "fish"] {
+        assert!(shells.contains(&shell.to_string()), "{shell} in {shells:?}");
+    }
+}
+
+#[test]
+fn zsh_completions_complete_on_the_first_tab() {
+    let out = completions_in_empty_dir(&["completions", "zsh"]);
+
+    assert_ok(&out);
+    let script = stdout(&out);
+    assert!(
+        script.contains("_clap_dynamic_completer_kraken()"),
+        "{script}"
+    );
+    assert!(
+        script.contains(
+            "if [ \"$funcstack[1]\" = \"_kraken\" ]; then\n    _clap_dynamic_completer_kraken \"$@\"\nfi"
+        ),
+        "{script}"
+    );
 }
