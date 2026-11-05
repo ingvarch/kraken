@@ -46,6 +46,8 @@ archives:
       - LICENSE
       - README.md
       - THIRD_PARTY_NOTICES
+      # The README links to these guides.
+      - docs/*.md
 
 changelog:
   use: github-native

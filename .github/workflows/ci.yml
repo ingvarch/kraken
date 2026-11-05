@@ -86,6 +86,21 @@ jobs:
           version-file: .tool-versions
           args: release --snapshot --clean
 
+      # The README links to the guides in docs/, so every archive must carry them.
+      - name: archives carry the guides
+        run: |
+          status=0
+          for archive in dist/kraken_*.tar.gz; do
+            contents=$(tar -tzf "$archive")
+            for guide in $(grep -o '](docs/[a-z-]*\.md' README.md | cut -c3- | sort -u); do
+              if ! grep -qxF "$guide" <<<"$contents"; then
+                echo "$archive is missing $guide"
+                status=1
+              fi
+            done
+          done
+          exit $status
+
       - uses: actions/setup-go@v7
         with:
           go-version: stable
