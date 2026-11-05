@@ -17,6 +17,7 @@ use semver::Version;
 /// Bump the project version, tag the release and push it.
 #[derive(Parser)]
 #[command(
+    name = BIN,
     version,
     args_conflicts_with_subcommands = true,
     disable_help_subcommand = true,

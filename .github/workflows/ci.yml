@@ -37,6 +37,12 @@ jobs:
         if: success() || failure()
         run: cargo about generate --fail --output-file /dev/null about.hbs
 
+      # Packs the crate from `include` and builds the packed files, so a file
+      # the build needs that is missing from `include` fails here. It does not
+      # check the name on crates.io.
+      - name: package
+        run: cargo publish --dry-run --locked
+
   test:
     name: test ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
