@@ -4,7 +4,7 @@ What kraken does not support. What it does support is in [how-it-works.md](how-i
 
 - One version for the whole repository. A Cargo workspace needs `[workspace.package].version`; per-crate versions are not supported.
 - kraken does not change dependency requirements. If `app` depends on `engine = { path = "../engine", version = "0.1.0" }`, a bump to 0.2.0 is refused until you update the requirement.
-- Only `X.Y.Z` versions. Pre-release (`1.0.0-rc.1`) and build metadata are rejected; pre-release tags are ignored.
+- Only `X.Y.Z` versions. Pre-release (`1.0.0-rc.1`) and build metadata are rejected, except the build number after `+` in `pubspec.yaml`; pre-release tags are ignored.
 - No GitHub releases.
 - The suggested level comes from the commit subjects and `BREAKING CHANGE:` footers. kraken does not compare the code or the public API.
 - kraken never suggests 1.0.0: leave 0.x with `major` when you are ready.
@@ -14,3 +14,4 @@ What kraken does not support. What it does support is in [how-it-works.md](how-i
 - kraken does not move what you wrote under `## [Unreleased]` into the new section. They stay there after the release; move them into the release section yourself.
 - A version set in `build.gradle` or `build.gradle.kts` is code, and kraken does not read it. Put the version in `gradle.properties`.
 - In an Xcode project kraken sets `MARKETING_VERSION` and leaves `CURRENT_PROJECT_VERSION` (the build number) as it is. kraken refuses a repository with more than one `.xcodeproj` that sets `MARKETING_VERSION`; a project that git ignores does not count. Every `MARKETING_VERSION` in `project.pbxproj` (or `project.yml`) must be the same `X.Y.Z` version, test targets included. Xcode starts new targets at `1.0`, so set them to the app's version once before the first release.
+- In `pubspec.yaml` kraken sets the version before `+` and leaves the build number after it as it is, as it does with `CURRENT_PROJECT_VERSION` in Xcode.

@@ -472,6 +472,7 @@ mod tests {
                 Kind::Gradle => "gradle.properties",
                 Kind::XcodeGen => "project.yml",
                 Kind::Xcode => "App.xcodeproj/project.pbxproj",
+                Kind::Pubspec => "pubspec.yaml",
             }
             .to_string(),
             lock: None,
