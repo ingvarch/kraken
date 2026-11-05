@@ -2,6 +2,7 @@ pub mod changelog;
 mod cmd;
 pub mod commit;
 mod git;
+pub mod github;
 pub mod manifest;
 pub mod origin;
 pub mod release;

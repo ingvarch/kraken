@@ -38,7 +38,8 @@ goreleaser release --snapshot --clean
 - `src/changelog.rs`: the changelog section from the commits, and `kraken changelog`.
 - `src/version.rs`: versions, levels and release tags.
 - `src/origin.rs`: reads origin's URL and builds the web pages of GitHub, GitLab and Codeberg repositories.
+- `src/github.rs`: the gh commands for the GitHub release.
 - `src/undo.rs`: checks that a release is local and removes it for `kraken undo`.
 - `src/git.rs`: the git commands kraken runs.
 - `src/cmd.rs`: runs a program with a time limit and stops it with everything it started.
-- `tests/cli.rs`: runs the binary against temporary git repositories.
+- `tests/cli.rs`: runs the binary against temporary git repositories. The GitHub release tests put a fake `gh` and `ssh` on `PATH`, so they need no network and no gh login.

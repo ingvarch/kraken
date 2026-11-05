@@ -264,6 +264,13 @@ impl Git {
         self.run(&["remote", "get-url", "--push", remote])
     }
 
+    /// The path of `name` in the git directory, which is per worktree.
+    pub fn git_path(&self, name: &str) -> Result<PathBuf> {
+        Ok(self
+            .root
+            .join(self.run(&["rev-parse", "--git-path", name])?))
+    }
+
     pub fn has_remote(&self, name: &str) -> Result<bool> {
         Ok(self.run(&["remote"])?.lines().any(|remote| remote == name))
     }

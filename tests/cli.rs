@@ -43,6 +43,10 @@ const CARGO_LOCK: &str = "version = 4\n\n[[package]]\nname = \"demo\"\nversion =
 const TEMPLATE: &str = kraken::changelog::TEMPLATE;
 const KRAKEN_LINE: &str =
     "<!-- kraken adds a section for every release. Delete this line to stop it. -->";
+const RELEASE_OPTIONS: kraken::release::Options = kraken::release::Options {
+    changelog: true,
+    github_release: false,
+};
 const RELEASED_AT: &str = "2026-11-04T12:00:00+0000";
 
 /// Keeps the user's git config (signing, hooks, identity) out of the tests.
@@ -132,6 +136,25 @@ impl FakeGitHub {
         );
         fs::write(bin.join("ssh"), script).unwrap();
         fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o755)).unwrap();
+        let root = dir.path().display();
+        let gh = format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >> \"{root}/gh.log\"\n\
+             printf '%s\\n' \"$GH_PROMPT_DISABLED\" >> \"{root}/gh.prompt\"\n\
+             case \"$1 $2\" in\n\
+             \"api \"*)\n\
+             [ \"$FAKE_GH_FAIL\" = api ] && {{ echo 'To get started with GitHub CLI, please run:  gh auth login' >&2; exit 4; }}\n\
+             exit 0 ;;\n\
+             \"release create\")\n\
+             tag=$3\n\
+             while [ $# -gt 0 ]; do [ \"$1\" = --notes-file ] && cp \"$2\" \"{root}/notes.md\"; shift; done\n\
+             [ \"$FAKE_GH_FAIL\" = release ] && {{ echo 'HTTP 403: Resource not accessible by personal access token' >&2; exit 1; }}\n\
+             [ -n \"$FAKE_GH_SILENT\" ] && exit 0\n\
+             echo \"https://github.com/o/r/releases/tag/$tag\" ;;\n\
+             esac\n"
+        );
+        fs::write(bin.join("gh"), gh).unwrap();
+        fs::set_permissions(bin.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
         let bare = dir.path().join("remote/o/r.git");
         fs::create_dir_all(&bare).unwrap();
         git_in(&bare, &["init", "-q", "--bare"]);
@@ -144,6 +167,32 @@ impl FakeGitHub {
             self.dir.path().join("bin").display(),
             std::env::var("PATH").unwrap()
         )
+    }
+
+    /// The arguments of every gh call, one call per line.
+    fn gh_log(&self) -> String {
+        fs::read_to_string(self.dir.path().join("gh.log")).unwrap_or_default()
+    }
+
+    /// `GH_PROMPT_DISABLED` as each gh call saw it, one call per line.
+    fn gh_prompt(&self) -> String {
+        fs::read_to_string(self.dir.path().join("gh.prompt")).unwrap_or_default()
+    }
+
+    /// The notes file the last `gh release create` was given.
+    fn notes(&self) -> String {
+        fs::read_to_string(self.dir.path().join("notes.md")).unwrap()
+    }
+
+    /// A second bare repository, `o/mirror.git`.
+    fn add_mirror(&self) {
+        let bare = self.dir.path().join("remote/o/mirror.git");
+        fs::create_dir_all(&bare).unwrap();
+        git_in(&bare, &["init", "-q", "--bare"]);
+    }
+
+    fn bare(&self, name: &str) -> std::path::PathBuf {
+        self.dir.path().join("remote/o").join(name)
     }
 }
 
@@ -244,6 +293,24 @@ impl Repo {
             .env("GIT_COMMITTER_DATE", RELEASED_AT)
             .env("PATH", github.path())
             .env("FAKE_SSH_HOSTNAME", hostname)
+            .current_dir(self.path())
+            .output()
+            .unwrap()
+    }
+
+    /// Runs kraken dated [`RELEASED_AT`] against `github`: the fake `ssh` and `gh` come first on PATH.
+    fn kraken_gh(&self, github: &FakeGitHub, args: &[&str], envs: &[(&str, &str)]) -> Output {
+        self.kraken_gh_with_path(&github.path(), args, envs)
+    }
+
+    fn kraken_gh_with_path(&self, path: &str, args: &[&str], envs: &[(&str, &str)]) -> Output {
+        isolate(Command::new(env!("CARGO_BIN_EXE_kraken")).args(args))
+            .env("GIT_COMMITTER_DATE", RELEASED_AT)
+            .env("PATH", path)
+            .env_remove("GIT_SSH_COMMAND")
+            .env_remove("GIT_SSH")
+            .env_remove("GH_PROMPT_DISABLED")
+            .envs(envs.iter().copied())
             .current_dir(self.path())
             .output()
             .unwrap()
@@ -1236,7 +1303,7 @@ fn dry_run_needs_a_level() {
 fn refuses_to_release_files_changed_after_the_start() {
     let repo = Repo::new();
     repo.node();
-    let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
+    let release = kraken::release::Release::prepare(repo.path(), RELEASE_OPTIONS).unwrap();
     let plan = release.plan(kraken::version::Level::Patch, None).unwrap();
     repo.write("package.json", &PACKAGE_JSON.replace("demo", "changed"));
 
@@ -1250,7 +1317,7 @@ fn refuses_to_release_files_changed_after_the_start() {
 fn refuses_to_release_after_a_branch_switch() {
     let repo = Repo::new();
     repo.node();
-    let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
+    let release = kraken::release::Release::prepare(repo.path(), RELEASE_OPTIONS).unwrap();
     let plan = release.plan(kraken::version::Level::Patch, None).unwrap();
     repo.git(&["checkout", "-q", "-b", "other"]);
 
@@ -1264,7 +1331,7 @@ fn refuses_to_release_after_a_branch_switch() {
 fn refuses_to_release_after_a_new_commit() {
     let repo = Repo::new();
     repo.node();
-    let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
+    let release = kraken::release::Release::prepare(repo.path(), RELEASE_OPTIONS).unwrap();
     let plan = release.plan(kraken::version::Level::Patch, None).unwrap();
     repo.write("notes.md", "");
     repo.commit_all();
@@ -3027,7 +3094,7 @@ fn release_warnings_list_the_empty_release_for_both_outputs() {
     let repo = Repo::new();
     node_tagged(&repo);
 
-    let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
+    let release = kraken::release::Release::prepare(repo.path(), RELEASE_OPTIONS).unwrap();
 
     assert_eq!(release.warnings(None), ["no commits since v1.2.3"]);
 }
@@ -5026,4 +5093,467 @@ fn release_after_changelog_continues_the_history() {
         at(&format!("[1.1.0]: {GH}/compare/v1.0.1...v1.1.0"))
             < at(&format!("[1.0.1]: {GH}/compare/v1.0.0...v1.0.1"))
     );
+}
+
+/// A repository at v1.2.3 without CHANGELOG.md, one `feat` commit later, with GitHub as origin.
+fn plain_github_repo() -> (Repo, FakeGitHub) {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+    repo.commit("feat: add a command");
+    let github = FakeGitHub::new();
+    repo.add_github_origin(&github);
+    (repo, github)
+}
+
+const NOTES_FILE: &str = "KRAKEN_RELEASE_NOTES.md";
+
+fn notes_path(repo: &Repo) -> String {
+    format!("{}/{NOTES_FILE}", git_dir(repo))
+}
+
+fn git_dir(repo: &Repo) -> String {
+    let dir = repo.git(&["rev-parse", "--absolute-git-dir"]);
+    fs::canonicalize(dir).unwrap().display().to_string()
+}
+
+fn release_call(repo: &Repo, extra: &str) -> String {
+    format!(
+        "release create v1.2.4 --repo github.com/o/r --verify-tag --title v1.2.4 --notes-file {}{extra}",
+        notes_path(repo)
+    )
+}
+
+#[test]
+fn github_release_after_the_push() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    let out = repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]);
+
+    assert_ok(&out);
+    assert_eq!(
+        github.gh_log().lines().collect::<Vec<_>>(),
+        [
+            "api --hostname github.com repos/o/r --silent".to_string(),
+            release_call(&repo, "")
+        ]
+    );
+    assert_eq!(git_in(&github.bare("r.git"), &["tag", "--list"]), "v1.2.4");
+    let text = stdout(&out);
+    assert!(
+        text.contains("Checking github.com/o/r with gh...\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Creating the GitHub release v1.2.4 on github.com/o/r...\n"),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(
+            "Pushed main and v1.2.4 to origin\nCreating the GitHub release v1.2.4 on github.com/o/r...\nCreated the GitHub release https://github.com/o/r/releases/tag/v1.2.4\n"
+        ),
+        "{text}"
+    );
+    assert!(!Path::new(&notes_path(&repo)).exists());
+}
+
+#[test]
+fn gh_runs_without_prompts() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    assert_ok(&repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]));
+
+    assert_eq!(github.gh_prompt(), "1\n1\n");
+}
+
+#[test]
+fn github_release_names_the_repository_when_gh_prints_no_url() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    let out = repo.kraken_gh(
+        &github,
+        &["patch", "--yes", "--github-release"],
+        &[("FAKE_GH_SILENT", "1")],
+    );
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).ends_with("Created the GitHub release v1.2.4 on github.com/o/r\n"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn github_release_notes_are_the_changelog_section_without_its_heading() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    assert_ok(&repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]));
+
+    let changelog = repo.read("CHANGELOG.md");
+    let section = changelog
+        .split_once("## [1.2.4] - 2026-11-04\n\n")
+        .unwrap()
+        .1;
+    assert_eq!(github.notes(), "### Added\n\n- add a command\n");
+    assert!(section.starts_with(&github.notes()), "{section}");
+}
+
+#[test]
+fn github_release_notes_come_from_the_commits_without_a_changelog() {
+    let (repo, github) = plain_github_repo();
+    repo.commit("fix: a bug");
+
+    assert_ok(&repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]));
+
+    assert_eq!(
+        github.notes(),
+        "### Added\n\n- add a command\n\n### Fixed\n\n- a bug\n"
+    );
+    assert!(!repo.path().join("CHANGELOG.md").exists());
+}
+
+#[test]
+fn no_changelog_still_gives_the_github_release_notes() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    assert_ok(&repo.kraken_gh(
+        &github,
+        &["patch", "--yes", "--github-release", "--no-changelog"],
+        &[],
+    ));
+
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert_eq!(github.notes(), "### Added\n\n- add a command\n");
+}
+
+#[test]
+fn github_release_without_entries_has_no_notes() {
+    let (repo, github) = plain_github_repo();
+    repo.git(&["reset", "-q", "--hard", "v1.2.3"]);
+    repo.commit("docs: explain it");
+
+    assert_ok(&repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]));
+
+    assert_eq!(github.notes(), "");
+}
+
+#[test]
+fn never_runs_gh_without_the_flag() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    assert_ok(&repo.kraken_gh(&github, &["patch", "--yes"], &[]));
+
+    assert_eq!(github.gh_log(), "");
+}
+
+#[test]
+fn github_release_needs_origin() {
+    let repo = Repo::new();
+    repo.node();
+    let github = FakeGitHub::new();
+    let head = repo.head();
+
+    let out = repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]);
+
+    assert_failed_with(
+        &out,
+        "error: --github-release needs an origin remote on GitHub",
+    );
+    assert_eq!(repo.head(), head);
+    assert!(repo.tags().is_empty());
+    assert_eq!(github.gh_log(), "");
+}
+
+#[test]
+fn github_release_needs_origin_on_github() {
+    let repo = Repo::new();
+    repo.node();
+    let local = bare_origin();
+    repo.add_origin(&local);
+    let github = FakeGitHub::new();
+    let head = repo.head();
+
+    let out = repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]);
+
+    assert_failed_with(
+        &out,
+        &format!(
+            "error: --github-release needs origin on GitHub; origin pushes to {}",
+            local.path().display()
+        ),
+    );
+    assert_eq!(repo.head(), head);
+    assert!(repo.tags().is_empty());
+    assert_eq!(github.gh_log(), "");
+}
+
+#[test]
+fn github_release_keeps_the_password_out_of_the_output() {
+    let repo = Repo::new();
+    repo.node();
+    repo.set_origin("https://kraken:s3cret@example.com/app.git");
+    let github = FakeGitHub::new();
+
+    let out = repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]);
+
+    assert_failed_with(&out, "origin pushes to https://example.com/app.git");
+    assert!(!stderr(&out).contains("s3cret") && !stdout(&out).contains("s3cret"));
+}
+
+#[test]
+fn github_release_needs_gh() {
+    let (repo, github) = github_repo(TEMPLATE);
+    let tools = tempfile::tempdir().unwrap();
+    let git = String::from_utf8(Command::new("which").arg("git").output().unwrap().stdout).unwrap();
+    std::os::unix::fs::symlink(git.trim(), tools.path().join("git")).unwrap();
+    std::os::unix::fs::symlink(github.dir.path().join("bin/ssh"), tools.path().join("ssh"))
+        .unwrap();
+    let head = repo.head();
+
+    let out = repo.kraken_gh_with_path(
+        tools.path().to_str().unwrap(),
+        &["patch", "--yes", "--github-release"],
+        &[],
+    );
+
+    assert_failed_with(
+        &out,
+        "error: --github-release needs the GitHub CLI; install gh from https://cli.github.com",
+    );
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tags(), ["v1.2.3"]);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn github_release_stops_when_gh_cannot_reach_the_repository() {
+    let (repo, github) = github_repo(TEMPLATE);
+    let head = repo.head();
+
+    let out = repo.kraken_gh(
+        &github,
+        &["patch", "--yes", "--github-release"],
+        &[("FAKE_GH_FAIL", "api")],
+    );
+
+    assert_failed_with(
+        &out,
+        "error: gh cannot reach github.com/o/r, so kraken changed nothing: `gh api --hostname github.com repos/o/r --silent` failed: To get started with GitHub CLI, please run:  gh auth login",
+    );
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tags(), ["v1.2.3"]);
+    assert_eq!(repo.status(), "");
+    assert!(!github.gh_log().contains("release create"));
+}
+
+#[test]
+fn github_release_goes_to_origin_when_upstream_exists() {
+    let (repo, github) = github_repo(TEMPLATE);
+    repo.git(&["remote", "add", "upstream", "git@github.com:other/app.git"]);
+
+    assert_ok(&repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]));
+
+    assert!(
+        github.gh_log().contains("--repo github.com/o/r "),
+        "{}",
+        github.gh_log()
+    );
+    assert!(!github.gh_log().contains("other/app"));
+}
+
+#[test]
+fn github_release_follows_the_push_url() {
+    let (repo, github) = github_repo(TEMPLATE);
+    github.add_mirror();
+    repo.git(&["remote", "set-url", "origin", "git@github.com:o/mirror.git"]);
+    repo.git(&["config", "remote.origin.pushurl", "git@github.com:o/r.git"]);
+
+    assert_ok(&repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]));
+
+    assert!(
+        github.gh_log().contains("--repo github.com/o/r "),
+        "{}",
+        github.gh_log()
+    );
+    assert_eq!(git_in(&github.bare("r.git"), &["tag", "--list"]), "v1.2.4");
+}
+
+#[test]
+fn github_release_resolves_an_ssh_host_alias() {
+    let (repo, github) = github_repo(TEMPLATE);
+    repo.git(&["remote", "set-url", "origin", "git@github-work:o/r.git"]);
+
+    let out = repo.kraken_gh(
+        &github,
+        &["patch", "--yes", "--github-release"],
+        &[("FAKE_SSH_HOSTNAME", "github.com")],
+    );
+
+    assert_ok(&out);
+    let log = github.gh_log();
+    assert!(log.contains("api --hostname github.com repos/o/r"), "{log}");
+    assert!(log.contains("--repo github.com/o/r "), "{log}");
+}
+
+#[test]
+fn older_release_is_not_marked_latest() {
+    let (repo, github) = github_repo(TEMPLATE);
+    repo.git(&["branch", "maintenance", "v1.2.3"]);
+    repo.git(&["tag", "v2.0.0"]);
+    repo.git(&["checkout", "-q", "maintenance"]);
+    repo.commit("fix: patch the old line");
+
+    let out = repo.kraken_gh(&github, &["patch", "--yes", "--github-release"], &[]);
+
+    assert_ok(&out);
+    assert!(
+        github.gh_log().trim_end().ends_with("--latest=false"),
+        "{}",
+        github.gh_log()
+    );
+}
+
+#[test]
+fn failed_github_release_keeps_the_tag_and_prints_the_retry() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    let out = repo.kraken_gh(
+        &github,
+        &["patch", "--yes", "--github-release"],
+        &[("FAKE_GH_FAIL", "release")],
+    );
+
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(git_in(&github.bare("r.git"), &["tag", "--list"]), "v1.2.4");
+    let call = release_call(&repo, "");
+    let text = stderr(&out);
+    assert_eq!(
+        text.split_once("error: ").unwrap().1,
+        format!(
+            "could not create the GitHub release: `gh {call}` failed: HTTP 403: Resource not accessible by personal access token\nThe tag v1.2.4 is on origin, so nothing was rolled back. To try again, run:\n\n  gh {call}\n"
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(notes_path(&repo)).unwrap(),
+        "### Added\n\n- add a command\n"
+    );
+}
+
+#[test]
+fn dry_run_shows_the_github_release_and_changes_nothing() {
+    let (repo, github) = github_repo(TEMPLATE);
+    let head = repo.head();
+
+    let out = repo.kraken_gh(&github, &["minor", "--dry-run", "--github-release"], &[]);
+
+    assert_ok(&out);
+    let text = stdout(&out);
+    assert!(
+        text.contains(
+            "  push main and v1.3.0 to origin\n  create the GitHub release v1.3.0 on github.com/o/r, with the changelog section as notes\n  add to CHANGELOG.md:\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        github.gh_log().trim_end(),
+        "api --hostname github.com repos/o/r --silent"
+    );
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tags(), ["v1.2.3"]);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn dry_run_shows_the_release_notes_without_a_changelog() {
+    let (repo, github) = plain_github_repo();
+
+    let out = repo.kraken_gh(&github, &["minor", "--dry-run", "--github-release"], &[]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains(
+            "  create the GitHub release v1.3.0 on github.com/o/r, with these notes:\n\n    ### Added\n\n    - add a command\n"
+        ),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn dry_run_says_when_the_github_release_has_no_notes() {
+    let (repo, github) = plain_github_repo();
+    repo.git(&["reset", "-q", "--hard", "v1.2.3"]);
+    repo.commit("docs: explain it");
+
+    let out = repo.kraken_gh(&github, &["patch", "--dry-run", "--github-release"], &[]);
+
+    assert!(
+        stdout(&out).contains("on github.com/o/r, with no notes\n"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn pre_release_goes_out_as_a_github_pre_release() {
+    let (repo, github) = github_repo(TEMPLATE);
+
+    assert_ok(&repo.kraken_gh(
+        &github,
+        &["minor", "--pre", "rc", "--yes", "--github-release"],
+        &[],
+    ));
+
+    let log = github.gh_log();
+    assert!(log.trim_end().ends_with("--prerelease"), "{log}");
+    assert!(log.contains("release create v1.3.0-rc.1 "), "{log}");
+    assert!(!log.contains("--latest"), "{log}");
+    assert_eq!(github.notes(), "### Added\n\n- add a command\n");
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+}
+
+#[test]
+fn pre_release_notes_list_the_commits_since_the_previous_pre_release() {
+    let (repo, github) = github_repo(TEMPLATE);
+    assert_ok(&repo.kraken_gh(&github, &["minor", "--pre", "rc", "--yes"], &[]));
+    repo.commit("fix: second thing");
+
+    assert_ok(&repo.kraken_gh(&github, &["--pre", "rc", "--yes", "--github-release"], &[]));
+
+    let log = github.gh_log();
+    assert!(log.contains("release create v1.3.0-rc.2 "), "{log}");
+    assert_eq!(github.notes(), "### Fixed\n\n- second thing\n");
+}
+
+#[test]
+fn final_release_after_a_pre_release_is_latest() {
+    let (repo, github) = github_repo(TEMPLATE);
+    assert_ok(&repo.kraken_gh(&github, &["minor", "--pre", "rc", "--yes"], &[]));
+    repo.commit("feat: add another command");
+
+    assert_ok(&repo.kraken_gh(&github, &["minor", "--yes", "--github-release"], &[]));
+
+    let log = github.gh_log();
+    assert!(log.contains("release create v1.3.0 "), "{log}");
+    assert!(
+        !log.contains("--latest") && !log.contains("--prerelease"),
+        "{log}"
+    );
+    assert_eq!(
+        github.notes(),
+        "### Added\n\n- add a command\n- add another command\n"
+    );
+}
+
+#[test]
+fn github_release_is_a_flag_of_the_release_only() {
+    let repo = Repo::new();
+    for args in [
+        &["version", "--github-release"][..],
+        &["changelog", "--github-release"][..],
+    ] {
+        let out = repo.kraken(args);
+        assert_failed_with(&out, "unexpected argument '--github-release'");
+    }
 }

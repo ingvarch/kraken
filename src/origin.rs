@@ -84,6 +84,24 @@ pub fn resolve(url: &str, dir: &Path) -> Option<Repo> {
     })
 }
 
+/// `url` without the user and password, which may be a secret.
+pub fn without_userinfo(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+            let host = authority.rsplit('@').next().unwrap_or(authority);
+            match path {
+                "" => format!("{scheme}://{host}"),
+                path => format!("{scheme}://{host}/{path}"),
+            }
+        }
+        None => match scp_like(url) {
+            Some((host, path)) => format!("{}:{path}", host.rsplit('@').next().unwrap_or(host)),
+            None => url.to_string(),
+        },
+    }
+}
+
 fn is_ssh(url: &str) -> bool {
     match url.split_once("://") {
         Some((scheme, _)) => ["ssh", "git+ssh", "ssh+git"].contains(&scheme),
@@ -199,6 +217,22 @@ mod tests {
         assert_eq!(found.to_string(), "github.com/o/r");
         let page = Pages::of(&found).unwrap().release_page(Some("v1"), "v2");
         assert!(!page.contains("user") && !page.contains("token"), "{page}");
+    }
+
+    #[test]
+    fn takes_the_user_and_password_out_of_a_url() {
+        for (url, clean) in [
+            (
+                "https://kraken:s3cret@example.com/app.git",
+                "https://example.com/app.git",
+            ),
+            ("https://kraken@example.com", "https://example.com"),
+            ("git@github.com:o/r.git", "github.com:o/r.git"),
+            ("/srv/git/a@b.git", "/srv/git/a@b.git"),
+            ("https://example.com/a@b", "https://example.com/a@b"),
+        ] {
+            assert_eq!(without_userinfo(url), clean, "{url}");
+        }
     }
 
     #[test]

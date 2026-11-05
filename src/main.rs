@@ -5,7 +5,8 @@ use anyhow::{Result, bail};
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 use kraken::changelog::{self, Setup};
 use kraken::commit::Tally;
-use kraken::release::{Current, Next, Plan, Release, push_target};
+use kraken::github::GitHubRelease;
+use kraken::release::{Current, Next, Options, Plan, Release, push_target};
 use kraken::ui::{self, App, Choice, Facts};
 use kraken::undo::Undo;
 use kraken::version::{Level, Pre, next, pre_release_level, suggestion_warning};
@@ -43,6 +44,10 @@ struct Cli {
     /// Leave CHANGELOG.md out of this release
     #[arg(long)]
     no_changelog: bool,
+
+    /// Create a GitHub release with gh after the push
+    #[arg(long)]
+    github_release: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -96,7 +101,11 @@ fn run(cli: &Cli) -> Result<()> {
         Some(Command::Undo { yes, dry_run }) => return undo(yes, dry_run),
         None => {}
     }
-    let release = Release::prepare(&std::env::current_dir()?, !cli.no_changelog)?;
+    let options = Options {
+        changelog: !cli.no_changelog,
+        github_release: cli.github_release,
+    };
+    let release = Release::prepare(&std::env::current_dir()?, options)?;
     let level = match cli.level {
         Some(arg) => Some(level(arg, &release, cli.pre)?),
         None if cli.pre.is_some() => pre_release_level(&release.current),
@@ -116,6 +125,7 @@ fn run(cli: &Cli) -> Result<()> {
     if let Some(warning) = check_origin(&release)? {
         eprintln!("warning: {warning}");
     }
+    check_github(&release)?;
     let Some(level) = level else {
         if cli.pre.is_some() {
             bail!(
@@ -269,14 +279,28 @@ fn create_changelog() -> Result<()> {
 fn finish(release: &Release, plan: &Plan, push: bool) -> Result<()> {
     release.apply(plan)?;
     print_applied(plan);
-    match push_of(release, plan) {
-        Some(target) if push => {
+    match push_step(push_of(release, plan), push, plan.github.is_some()) {
+        Ok(target) => {
             println!("Pushing {target}...");
             release.push(plan)?;
             println!("Pushed {target}");
         }
-        Some(_) => println!("Not pushed to origin"),
-        None => println!("No origin remote: nothing to push"),
+        Err(lines) => {
+            lines.iter().for_each(|line| println!("{line}"));
+            return Ok(());
+        }
+    }
+    if let Some(github) = &plan.github {
+        println!("Creating the GitHub {}...", github.describe());
+        let url = release.create_github_release(plan)?;
+        if url.is_empty() {
+            println!(
+                "Created the GitHub release {} on {}",
+                github.tag, github.repo
+            );
+        } else {
+            println!("Created the GitHub release {url}");
+        }
     }
     Ok(())
 }
@@ -285,6 +309,7 @@ fn finish(release: &Release, plan: &Plan, push: bool) -> Result<()> {
 fn release_in_panel(release: &Release, level: Option<Level>, pre: Option<Pre>) -> Result<()> {
     let mut warnings = release.warnings(pre);
     warnings.extend(check_origin(release)?);
+    check_github(release)?;
     let facts = Facts {
         version_files: release
             .manifests
@@ -347,6 +372,32 @@ fn check_origin(release: &Release) -> Result<Option<String>> {
     release.check_origin_tags()
 }
 
+/// Fails when gh cannot reach the repository of the GitHub release.
+fn check_github(release: &Release) -> Result<()> {
+    if let Some(repo) = release.github_repo() {
+        println!("Checking {repo} with gh...");
+        release.check_github()?;
+    }
+    Ok(())
+}
+
+/// The push target when kraken pushes and goes on; otherwise the lines to print before it stops.
+fn push_step(
+    target: Option<String>,
+    push: bool,
+    github_release: bool,
+) -> Result<String, Vec<&'static str>> {
+    match target {
+        Some(target) if push => Ok(target),
+        Some(_) if github_release => Err(vec![
+            "Not pushed to origin",
+            "No GitHub release without the push",
+        ]),
+        Some(_) => Err(vec!["Not pushed to origin"]),
+        None => Err(vec!["No origin remote: nothing to push"]),
+    }
+}
+
 fn push_of(release: &Release, plan: &Plan) -> Option<String> {
     push_target(&release.branch, release.remote_branch.as_deref(), &plan.tag)
 }
@@ -401,6 +452,9 @@ fn print_dry_run(release: &Release, plan: &Plan) {
     println!("  tag {}", plan.tag);
     if let Some(push) = push_of(release, plan) {
         println!("  push {push}");
+        if let Some(github) = &plan.github {
+            print_github_dry_run(github, plan.changelog.is_some());
+        }
     }
     for (spelling, files) in &plan.other_spellings {
         println!(
@@ -416,13 +470,7 @@ fn print_dry_run(release: &Release, plan: &Plan) {
     }
     if let Some(section) = &plan.changelog {
         println!("  add to {}:\n", changelog::FILE);
-        for line in section.markdown().lines() {
-            if line.is_empty() {
-                println!();
-            } else {
-                println!("    {line}");
-            }
-        }
+        print_indented(&section.markdown());
     }
     if let Some(links) = &plan.links {
         println!("\n  set the links at the end of {}:\n", changelog::FILE);
@@ -433,12 +481,60 @@ fn print_dry_run(release: &Release, plan: &Plan) {
     print_untracked(plan);
 }
 
+fn print_github_dry_run(github: &GitHubRelease, changelog_has_notes: bool) {
+    let notes = github.notes.notes();
+    let create = format!("  create the GitHub {}, with", github.describe());
+    if notes.is_empty() {
+        println!("{create} no notes");
+    } else if changelog_has_notes {
+        println!("{create} the changelog section as notes");
+    } else {
+        println!("{create} these notes:\n");
+        print_indented(&notes);
+    }
+}
+
+fn print_indented(text: &str) {
+    for line in text.lines() {
+        if line.is_empty() {
+            println!();
+        } else {
+            println!("    {line}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn cli(args: &[&str]) -> Cli {
         Cli::parse_from(std::iter::once("kraken").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn push_step_skips_the_github_release_when_nothing_is_pushed() {
+        let target = Some("main and v1.2.4 to origin".to_string());
+
+        assert_eq!(
+            push_step(target.clone(), false, true),
+            Err(vec![
+                "Not pushed to origin",
+                "No GitHub release without the push"
+            ])
+        );
+        assert_eq!(
+            push_step(target.clone(), false, false),
+            Err(vec!["Not pushed to origin"])
+        );
+        assert_eq!(
+            push_step(None, true, true),
+            Err(vec!["No origin remote: nothing to push"])
+        );
+        assert_eq!(
+            push_step(target.clone(), true, true),
+            Ok("main and v1.2.4 to origin".to_string())
+        );
     }
 
     #[test]

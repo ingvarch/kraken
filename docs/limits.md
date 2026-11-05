@@ -10,7 +10,9 @@ What kraken does not support. What it does support is in [how-it-works.md](how-i
 - An Xcode project, an XcodeGen `project.yml` and a browser extension's `manifest.json` take numbers only, so kraken refuses a pre-release there. `composer.json` takes the labels alpha, beta, RC, patch and dev. A file with `VersionPrefix` refuses a pre-release, because the label belongs in `VersionSuffix`.
 - A Flutter app's iOS build turns `1.4.0-rc.1` into `1.4.0.1`. pub and Android take the version as it is, and kraken does not warn.
 - A path dependency with an explicit `version = "*"` cannot be told from one without `version`. kraken accepts both for a pre-release, but cargo refuses the first.
-- No GitHub releases.
+- kraken makes a GitHub release only with `--github-release` and only through gh. It uploads no files, makes no drafts and does not change a release that exists.
+- The release goes to the repository that origin pushes to. Other remotes, `GH_REPO` and `gh repo set-default` do not change it.
+- Leave `--github-release` off when CI or another tool makes your releases, such as GoReleaser, release-please or release-drafter. kraken does not look for their drafts, and with immutable releases on, CI cannot add files to a release kraken published.
 - `kraken undo` removes only the latest release, only at HEAD and only when it is not pushed. It asks only `origin` over the network and does not delete tags on origin.
 - The suggested level comes from the commit subjects and `BREAKING CHANGE:` footers. kraken does not compare the code or the public API.
 - kraken never suggests 1.0.0: leave 0.x with `major` when you are ready.
