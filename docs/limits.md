@@ -4,7 +4,12 @@ What kraken does not support. What it does support is in [how-it-works.md](how-i
 
 - One version for the whole repository. A Cargo workspace needs `[workspace.package].version`; per-crate versions are not supported.
 - kraken does not change dependency requirements. If `app` depends on `engine = { path = "../engine", version = "0.1.0" }`, a bump to 0.2.0 is refused until you update the requirement.
-- Only `X.Y.Z` versions. Pre-release (`1.0.0-rc.1`) and build metadata are rejected, except the build number after `+` in `pubspec.yaml`; pre-release tags are ignored.
+- Build metadata (`1.0.0+abc`) is refused, except the build number after `+` in `pubspec.yaml`.
+- kraken makes only `alpha`, `beta` and `rc` pre-releases, in the form `1.4.0-rc.1`. It reads other pre-releases, such as `1.4.0-SNAPSHOT`, as the current version, and a release from them gives the final version or starts at `.1`.
+- kraken reads `pyproject.toml` and `uv.lock` only as `X.Y.Z` or in the normalized PEP 440 spelling `1.4.0rc1`, `1.4.0b1` or `1.4.0a1`. Other spellings, such as `1.4.0-rc.1` or `1.4.0.dev1`, are refused.
+- An Xcode project, an XcodeGen `project.yml` and a browser extension's `manifest.json` take numbers only, so kraken refuses a pre-release there. `composer.json` takes the labels alpha, beta, RC, patch and dev. A file with `VersionPrefix` refuses a pre-release, because the label belongs in `VersionSuffix`.
+- A Flutter app's iOS build turns `1.4.0-rc.1` into `1.4.0.1`. pub and Android take the version as it is, and kraken does not warn.
+- A path dependency with an explicit `version = "*"` cannot be told from one without `version`. kraken accepts both for a pre-release, but cargo refuses the first.
 - No GitHub releases.
 - The suggested level comes from the commit subjects and `BREAKING CHANGE:` footers. kraken does not compare the code or the public API.
 - kraken never suggests 1.0.0: leave 0.x with `major` when you are ready.

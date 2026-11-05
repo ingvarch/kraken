@@ -112,15 +112,13 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_release_keeps_its_suffix() {
-        let version = read_version("version: 1.2.3-dev.1+4\n").unwrap().unwrap();
+    fn a_pre_release_keeps_its_suffix_and_build_number() {
+        let text = "version: 1.2.3-dev.1+4\n";
+        let version = read_version(text).unwrap().unwrap();
         assert_eq!(version, "1.2.3-dev.1");
-        let err = crate::version::parse_release(&version)
-            .unwrap_err()
-            .to_string();
         assert_eq!(
-            err,
-            "\"1.2.3-dev.1\": pre-release versions are not supported"
+            set_version(text, "1.4.0-rc.1").unwrap(),
+            "version: 1.4.0-rc.1+4\n"
         );
     }
 

@@ -8,10 +8,10 @@ use ratatui::{DefaultTerminal, Frame};
 use semver::Version;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::changelog::Section;
+use crate::changelog::{self, Section};
 use crate::commit::Tally;
 use crate::release::{Plan, push_target};
-use crate::version::{Level, bump, suggest, suggestion_warning};
+use crate::version::{Level, suggest, suggestion_warning};
 
 const MAX_WIDTH: u16 = 64;
 const MIN_WIDTH: u16 = 44;
@@ -24,17 +24,20 @@ pub struct Facts {
     pub version_files: Vec<String>,
     pub current: Version,
     pub latest_tag: Option<String>,
+    /// The tag the commits are counted from: the latest tag that is not a pre-release.
+    pub changes_since: Option<String>,
     pub branch: String,
     /// The branch on origin to push to; `None` without an origin remote.
     pub remote_branch: Option<String>,
     pub warnings: Vec<String>,
-    /// The commits since the latest tag.
+    /// The commits since `changes_since`.
     pub commits: Tally,
 }
 
 /// A level and what releasing it would do, or why it cannot be released.
 pub struct Choice {
     pub level: Level,
+    pub version: Version,
     pub plan: Result<Plan, String>,
 }
 
@@ -195,7 +198,7 @@ impl App {
         let mut lines = row("Version", &version, width, Style::new());
         lines.extend(row("Branch", &branch, width, Style::new()));
         if self.screen == Screen::Choose {
-            let changes = facts.commits.summary(facts.latest_tag.as_deref());
+            let changes = facts.commits.summary(facts.changes_since.as_deref());
             lines.extend(row("Changes", &changes, width, Style::new()));
         }
         let suggestion = (self.screen == Screen::Confirm)
@@ -221,9 +224,12 @@ impl App {
         let versions: Vec<String> = self
             .choices
             .iter()
-            .map(|choice| bump(&self.facts.current, choice.level).to_string())
+            .map(|choice| choice.version.to_string())
             .collect();
         let column = versions.iter().map(String::len).max().unwrap_or(0);
+        // Prefix, level, gap, version, gap, then the longest meaning.
+        let widest = 2 + 5 + 3 + column + 3 + meaning(Level::Major).len();
+        let with_meaning = widest <= width;
         for (index, (choice, version)) in self.choices.iter().zip(&versions).enumerate() {
             let selected = index == self.selected;
             let marker = if selected { "❯" } else { " " };
@@ -232,13 +238,17 @@ impl App {
             } else {
                 Style::new()
             };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{marker} {:<5}   {version:<column$}", choice.level),
-                    style,
-                ),
-                Span::styled(format!("   {}", meaning(choice.level)), Style::new().dim()),
-            ]));
+            let mut spans = vec![Span::styled(
+                format!("{marker} {:<5}   {version:<column$}", choice.level),
+                style,
+            )];
+            if with_meaning {
+                spans.push(Span::styled(
+                    format!("   {}", meaning(choice.level)),
+                    Style::new().dim(),
+                ));
+            }
+            lines.push(Line::from(spans));
         }
         if self.facts.current.major == 0 && self.facts.commits.breaking > 0 {
             lines.extend(
@@ -259,8 +269,7 @@ impl App {
         let plan = match &choice.plan {
             Ok(plan) => plan,
             Err(reason) => {
-                let version = bump(&self.facts.current, choice.level);
-                lines.push(Line::from(format!("Cannot release {version}")).bold());
+                lines.push(Line::from(format!("Cannot release {}", choice.version)).bold());
                 lines.extend(
                     wrap(reason, width)
                         .into_iter()
@@ -269,7 +278,24 @@ impl App {
                 return hints(&[("esc", "back")]);
             }
         };
-        lines.push(Line::from(format!("Release {}", plan.tag)).bold());
+        let title = if plan.version.pre.is_empty() {
+            format!("Release {}", plan.tag)
+        } else {
+            format!("Release {}, a pre-release", plan.tag)
+        };
+        lines.push(Line::from(title).bold());
+        for (spelling, files) in &plan.other_spellings {
+            let verb = if files.len() == 1 { "gets" } else { "get" };
+            let note = format!(
+                "{} {verb} {spelling}, the PEP 440 spelling.",
+                files.join(", ")
+            );
+            lines.extend(dim_lines(&note, width));
+        }
+        if let Some(version) = &plan.changelog_waits {
+            let note = format!("{} gets its section with {version}.", changelog::FILE);
+            lines.extend(dim_lines(&note, width));
+        }
         match &plan.commit {
             Some(message) => {
                 lines.extend(row("Update", &plan.files.join(", "), width, Style::new()));
@@ -299,11 +325,7 @@ impl App {
         }
         for file in &plan.untracked {
             let note = format!("{file} is not tracked by git, so it stays out of the commit.");
-            lines.extend(
-                wrap(&note, width)
-                    .into_iter()
-                    .map(|line| Line::from(line).dim()),
-            );
+            lines.extend(dim_lines(&note, width));
         }
         if let Some(section) = &plan.changelog {
             let room = room.saturating_sub(lines.len());
@@ -327,6 +349,13 @@ impl App {
             &plan.tag,
         )
     }
+}
+
+fn dim_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    wrap(text, width)
+        .into_iter()
+        .map(|line| Line::from(line).dim())
+        .collect()
 }
 
 /// The changelog section in at most `room` lines, or nothing when it has no room.
@@ -521,6 +550,7 @@ mod tests {
             version_files: vec!["package.json".to_string()],
             current: v("1.2.3"),
             latest_tag: Some("v1.2.3".to_string()),
+            changes_since: Some("v1.2.3".to_string()),
             branch: "main".to_string(),
             remote_branch: Some("main".to_string()),
             warnings: vec![],
@@ -550,24 +580,42 @@ mod tests {
             files: vec!["package.json".to_string(), "package-lock.json".to_string()],
             untracked: vec![],
             changelog: None,
+            other_spellings: vec![],
+            changelog_waits: None,
+        }
+    }
+
+    fn choice(level: Level, version: &str) -> Choice {
+        Choice {
+            level,
+            version: v(version),
+            plan: Ok(plan(version)),
         }
     }
 
     fn choices() -> Vec<Choice> {
         vec![
-            Choice {
-                level: Level::Patch,
-                plan: Ok(plan("1.2.4")),
-            },
-            Choice {
-                level: Level::Minor,
-                plan: Ok(plan("1.3.0")),
-            },
-            Choice {
-                level: Level::Major,
-                plan: Ok(plan("2.0.0")),
-            },
+            choice(Level::Patch, "1.2.4"),
+            choice(Level::Minor, "1.3.0"),
+            choice(Level::Major, "2.0.0"),
         ]
+    }
+
+    fn pre_choices(current: &str, label: &str) -> Vec<Choice> {
+        [
+            (Level::Patch, bump_text(current, Level::Patch)),
+            (Level::Minor, bump_text(current, Level::Minor)),
+            (Level::Major, bump_text(current, Level::Major)),
+        ]
+        .into_iter()
+        .map(|(level, base)| choice(level, &format!("{base}-{label}.1")))
+        .collect()
+    }
+
+    fn bump_text(current: &str, level: Level) -> String {
+        crate::version::next(&v(current), level, None)
+            .unwrap()
+            .to_string()
     }
 
     fn app() -> App {
@@ -1137,5 +1185,130 @@ mod tests {
         assert_hides(&app, "too small");
         assert_shows(&app, "! the new commits suggest a minor release");
         assert_shows(&app, "enter release");
+    }
+
+    #[test]
+    fn rows_show_the_choice_version() {
+        let app = App::new(facts(), pre_choices("1.2.3", "rc"), None);
+
+        assert_shows(&app, "❯ patch   1.2.4-rc.1   bug fixes");
+        assert_shows(&app, "  minor   1.3.0-rc.1   new features");
+        assert_shows(&app, "  major   2.0.0-rc.1   breaking changes");
+    }
+
+    #[test]
+    fn pre_release_rows_fit_44_by_14() {
+        let mut facts = facts();
+        facts.remote_branch = None;
+        let app = App::new(facts, pre_choices("1.2.3", "alpha"), None);
+
+        let screen = screen_sized(&app, 44, 14);
+
+        assert!(!screen.contains("too small"), "{screen}");
+        assert!(screen.contains("major   2.0.0-alpha.1"), "{screen}");
+        assert!(screen.contains("patch   1.2.4-alpha.1"), "{screen}");
+        for meaning in ["breaking changes", "new features", "bug fixes", "brea"] {
+            assert!(!screen.contains(meaning), "{meaning}\n{screen}");
+        }
+    }
+
+    #[test]
+    fn rows_keep_the_meaning_when_they_fit() {
+        let screen = screen_sized(&app(), 44, 14);
+        assert!(
+            screen.contains("major   2.0.0   breaking changes"),
+            "{screen}"
+        );
+    }
+
+    fn pre_release_app() -> App {
+        let mut choices = vec![choice(Level::Minor, "1.4.0-rc.1")];
+        if let Ok(plan) = &mut choices[0].plan {
+            plan.changelog_waits = Some(v("1.4.0"));
+            plan.other_spellings = vec![(
+                "1.4.0rc1".to_string(),
+                vec!["pyproject.toml".to_string(), "uv.lock".to_string()],
+            )];
+        }
+        App::new(facts(), choices, Some(Level::Minor))
+    }
+
+    #[test]
+    fn confirmation_names_a_pre_release() {
+        let app = pre_release_app();
+        assert_shows(&app, "Release v1.4.0-rc.1, a pre-release");
+        assert_hides(&app, "Release v1.4.0-rc.1\n");
+    }
+
+    #[test]
+    fn confirmation_names_another_spelling() {
+        let app = pre_release_app();
+        assert_shows(&app, "pyproject.toml, uv.lock get 1.4.0rc1, the PEP 440");
+        assert_shows(&app, "spelling.");
+    }
+
+    #[test]
+    fn confirmation_says_the_changelog_waits() {
+        let app = pre_release_app();
+        assert_shows(&app, "CHANGELOG.md gets its section with 1.4.0.");
+    }
+
+    #[test]
+    fn one_file_in_another_spelling_gets_it() {
+        let mut choices = vec![choice(Level::Minor, "1.4.0-rc.1")];
+        if let Ok(plan) = &mut choices[0].plan {
+            plan.other_spellings =
+                vec![("1.4.0rc1".to_string(), vec!["pyproject.toml".to_string()])];
+        }
+        let app = App::new(facts(), choices, Some(Level::Minor));
+        assert_shows(&app, "pyproject.toml gets 1.4.0rc1, the PEP 440");
+    }
+
+    #[test]
+    fn a_final_release_has_no_pre_release_lines() {
+        let app = App::new(facts(), choices(), Some(Level::Minor));
+        assert_shows(&app, "Release v1.3.0");
+        assert_hides(&app, "a pre-release");
+        assert_hides(&app, "spelling");
+    }
+
+    #[test]
+    fn pre_release_confirmation_fits_a_standard_terminal() {
+        let mut facts = facts();
+        facts.warnings = vec![git_rejection()];
+        let mut choices = vec![choice(Level::Minor, "1.4.0-rc.1")];
+        if let Ok(plan) = &mut choices[0].plan {
+            plan.untracked = vec!["uv.lock".to_string()];
+            plan.changelog_waits = Some(v("1.4.0"));
+            plan.other_spellings = vec![(
+                "1.4.0rc1".to_string(),
+                vec!["pyproject.toml".to_string(), "uv.lock".to_string()],
+            )];
+        }
+        let app = App::new(facts, choices, Some(Level::Minor));
+
+        assert_hides(&app, "too small");
+        assert_shows(&app, "enter release");
+        assert_shows(&app, "CHANGELOG.md gets its section");
+    }
+
+    #[test]
+    fn cannot_release_names_the_choice_version() {
+        let mut choices = vec![choice(Level::Minor, "1.4.0-rc.1")];
+        choices[0].plan = Err("project.yml: MARKETING_VERSION takes numbers only".to_string());
+        let app = App::new(facts(), choices, Some(Level::Minor));
+
+        assert_shows(&app, "Cannot release 1.4.0-rc.1");
+    }
+
+    #[test]
+    fn changes_row_names_the_latest_final_tag() {
+        let mut facts = facts_with(tally(0, 1, 0, 0));
+        facts.current = v("1.3.0-rc.1");
+        facts.latest_tag = Some("v1.3.0-rc.1".to_string());
+        let app = App::new(facts, choices(), None);
+
+        assert_shows(&app, "Changes   1 feature since v1.2.3");
+        assert_shows(&app, "1.3.0-rc.1 from package.json");
     }
 }

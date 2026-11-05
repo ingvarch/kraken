@@ -358,20 +358,16 @@ fn pubspec_without_a_version_releases_from_tags() {
 }
 
 #[test]
-fn refuses_a_pubspec_pre_release() {
+fn pubspec_pre_release_releases_the_final_version() {
     const PUBSPEC: &str = "name: app\nversion: 1.2.3-dev.1+4\n";
     let repo = Repo::new();
     repo.write("pubspec.yaml", PUBSPEC);
     repo.commit_all();
 
-    let out = repo.kraken(&["patch", "--yes"]);
+    assert_ok(&repo.kraken(&["patch", "--yes"]));
 
-    assert_failed_with(
-        &out,
-        "pubspec.yaml: \"1.2.3-dev.1\": pre-release versions are not supported",
-    );
-    assert_eq!(repo.read("pubspec.yaml"), PUBSPEC);
-    assert_eq!(repo.status(), "");
+    assert_eq!(repo.read("pubspec.yaml"), "name: app\nversion: 1.2.3+4\n");
+    assert_eq!(repo.tags(), ["v1.2.3"]);
 }
 
 const PROJECT_YML: &str = "name: App\nsettings:\n  base:\n    MARKETING_VERSION: \"1.2.3\" # app\n    CURRENT_PROJECT_VERSION: 7\n";
@@ -1153,7 +1149,7 @@ fn refuses_to_release_files_changed_after_the_start() {
     let repo = Repo::new();
     repo.node();
     let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
-    let plan = release.plan(kraken::version::Level::Patch).unwrap();
+    let plan = release.plan(kraken::version::Level::Patch, None).unwrap();
     repo.write("package.json", &PACKAGE_JSON.replace("demo", "changed"));
 
     let err = release.apply(&plan).unwrap_err().to_string();
@@ -1167,7 +1163,7 @@ fn refuses_to_release_after_a_branch_switch() {
     let repo = Repo::new();
     repo.node();
     let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
-    let plan = release.plan(kraken::version::Level::Patch).unwrap();
+    let plan = release.plan(kraken::version::Level::Patch, None).unwrap();
     repo.git(&["checkout", "-q", "-b", "other"]);
 
     let err = release.apply(&plan).unwrap_err().to_string();
@@ -1181,7 +1177,7 @@ fn refuses_to_release_after_a_new_commit() {
     let repo = Repo::new();
     repo.node();
     let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
-    let plan = release.plan(kraken::version::Level::Patch).unwrap();
+    let plan = release.plan(kraken::version::Level::Patch, None).unwrap();
     repo.write("notes.md", "");
     repo.commit_all();
     let head = repo.head();
@@ -2565,7 +2561,7 @@ fn release_warnings_list_the_empty_release_for_both_outputs() {
 
     let release = kraken::release::Release::prepare(repo.path(), true).unwrap();
 
-    assert_eq!(release.warnings(), ["no commits since v1.2.3"]);
+    assert_eq!(release.warnings(None), ["no commits since v1.2.3"]);
 }
 
 #[test]
@@ -2582,6 +2578,76 @@ fn release_right_after_a_release_warns() {
         stderr(&out).contains("warning: no commits since v1.2.4\n"),
         "{}",
         stderr(&out)
+    );
+}
+
+#[test]
+fn auto_pre_release_refuses_to_release_the_same_commits_twice() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    assert_ok(&repo.kraken(&["auto", "--pre", "rc", "--yes"]));
+
+    let out = repo.kraken(&["auto", "--pre", "rc", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "error: no commits since v1.3.0-rc.1; nothing to release",
+    );
+    assert_eq!(repo.tags(), ["v1.2.3", "v1.3.0-rc.1"]);
+}
+
+#[test]
+fn version_next_pre_refuses_without_commits_since_a_pre_release() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    assert_ok(&repo.kraken(&["auto", "--pre", "rc", "--yes"]));
+
+    let out = repo.kraken(&["version", "--next", "--pre", "rc"]);
+
+    assert_failed_with(
+        &out,
+        "error: no commits since v1.3.0-rc.1; nothing to release",
+    );
+}
+
+#[test]
+fn pre_release_right_after_a_pre_release_warns() {
+    let repo = Repo::new();
+    repo.write("main.go", "package main\n");
+    repo.commit_all();
+    repo.git(&["tag", "v1.2.3"]);
+    repo.commit("feat: a");
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    let out = repo.kraken(&["--pre", "rc", "--yes"]);
+
+    assert_ok(&out);
+    assert!(
+        stderr(&out).contains("warning: no commits since v1.3.0-rc.1\n"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn final_release_after_a_pre_release_counts_from_the_final_tag() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    let next = repo.kraken(&["version", "--next"]);
+    let dry = repo.kraken(&["minor", "--dry-run"]);
+
+    assert_ok(&next);
+    assert_eq!(stdout(&next), "1.3.0\n");
+    assert_ok(&dry);
+    assert!(
+        !stderr(&dry).contains("no commits since"),
+        "{}",
+        stderr(&dry)
     );
 }
 
@@ -2852,5 +2918,614 @@ fn refuses_two_project_files_that_set_a_version() {
     assert_failed_with(
         &out,
         "more than one project file sets a version: Api.csproj, App.csproj",
+    );
+}
+
+#[test]
+fn minor_pre_release_from_a_final() {
+    let repo = Repo::new();
+    repo.node();
+
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    assert_eq!(
+        repo.read("package.json"),
+        PACKAGE_JSON.replace("1.2.3", "1.3.0-rc.1")
+    );
+    assert_eq!(
+        repo.read("package-lock.json"),
+        PACKAGE_LOCK.replace("1.2.3", "1.3.0-rc.1")
+    );
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "chore(release): v1.3.0-rc.1"
+    );
+    assert_eq!(repo.tag_commit("v1.3.0-rc.1"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn pre_release_counts_up_without_a_level() {
+    let repo = Repo::new();
+    repo.node();
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    assert_ok(&repo.kraken(&["--pre", "rc", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v1.3.0-rc.1", "v1.3.0-rc.2"]);
+    assert!(repo.read("package.json").contains("\"1.3.0-rc.2\""));
+}
+
+#[test]
+fn pre_release_moves_from_beta_to_rc() {
+    let repo = Repo::new();
+    repo.node();
+    assert_ok(&repo.kraken(&["minor", "--pre", "beta", "--yes"]));
+
+    assert_ok(&repo.kraken(&["--pre", "rc", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v1.3.0-beta.1", "v1.3.0-rc.1"]);
+}
+
+#[test]
+fn pre_release_cannot_go_back_from_rc_to_beta() {
+    let repo = Repo::new();
+    repo.node();
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+    let head = repo.head();
+
+    let out = repo.kraken(&["--pre", "beta", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "error: 1.3.0-beta.1 is lower than 1.3.0-rc.1; a pre-release goes from alpha to beta to rc",
+    );
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tags(), ["v1.3.0-rc.1"]);
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn pre_without_a_level_from_a_final_needs_a_level() {
+    let repo = Repo::new();
+    repo.node();
+
+    let out = repo.kraken(&["--pre", "rc", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "error: --pre without a level continues a pre-release, and 1.2.3 is not one; pass patch, minor, major or auto",
+    );
+    assert_eq!(repo.status(), "");
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn pre_takes_only_alpha_beta_and_rc() {
+    let repo = Repo::new();
+    repo.node();
+
+    let out = repo.kraken(&["minor", "--pre", "preview", "--yes"]);
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("[possible values: alpha, beta, rc]"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn final_release_after_pre_releases() {
+    let repo = Repo::new();
+    repo.node();
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+    assert_ok(&repo.kraken(&["--pre", "rc", "--yes"]));
+
+    assert_ok(&repo.kraken(&["minor", "--yes"]));
+
+    assert_eq!(
+        repo.read("package.json"),
+        PACKAGE_JSON.replace("1.2.3", "1.3.0")
+    );
+    assert_eq!(repo.tags(), ["v1.3.0", "v1.3.0-rc.1", "v1.3.0-rc.2"]);
+}
+
+#[test]
+fn major_after_a_minor_pre_release_releases_the_next_major() {
+    let repo = Repo::new();
+    repo.node();
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    assert_ok(&repo.kraken(&["major", "--yes"]));
+
+    assert!(repo.tags().contains(&"v2.0.0".to_string()));
+}
+
+#[test]
+fn patch_from_a_minor_pre_release_is_refused() {
+    let repo = Repo::new();
+    repo.node();
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "error: 1.3.0-rc.1 leads to 1.3.0, a minor release; pass minor or major",
+    );
+    assert_eq!(repo.tags(), ["v1.3.0-rc.1"]);
+}
+
+#[test]
+fn pre_release_adds_no_changelog_section() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: add a command");
+
+    assert_ok(&repo.kraken_dated(&["minor", "--pre", "rc", "--yes"]));
+
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "package-lock.json\npackage.json"
+    );
+}
+
+#[test]
+fn untracked_changelog_does_not_stop_a_pre_release() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+    repo.write("CHANGELOG.md", TEMPLATE);
+
+    assert_ok(&repo.kraken_dated(&["minor", "--pre", "rc", "--yes"]));
+
+    assert_eq!(repo.read("CHANGELOG.md"), TEMPLATE);
+}
+
+#[test]
+fn final_release_lists_the_commits_since_the_last_final_release() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: first feature");
+    assert_ok(&repo.kraken_dated(&["minor", "--pre", "rc", "--yes"]));
+    repo.commit("fix: late fix");
+    assert_ok(&repo.kraken_dated(&["--pre", "rc", "--yes"]));
+
+    assert_ok(&repo.kraken_dated(&["minor", "--yes"]));
+
+    let changelog = repo.read("CHANGELOG.md");
+    assert!(changelog.contains("## [1.3.0] - 2026-11-04"), "{changelog}");
+    assert!(changelog.contains("- first feature"), "{changelog}");
+    assert!(changelog.contains("- late fix"), "{changelog}");
+    assert!(!changelog.contains("rc.1"), "{changelog}");
+    assert!(!changelog.contains("chore"), "{changelog}");
+}
+
+#[test]
+fn dry_run_says_the_changelog_waits() {
+    let repo = Repo::new();
+    repo.node_with_changelog();
+    repo.commit("feat: add a command");
+
+    let out = repo.kraken_dated(&["minor", "--pre", "rc", "--dry-run"]);
+
+    assert_ok(&out);
+    let out = stdout(&out);
+    assert!(out.contains("  tag v1.3.0-rc.1\n"), "{out}");
+    assert!(
+        out.contains("  leave CHANGELOG.md alone: 1.3.0 gets the section\n"),
+        "{out}"
+    );
+    assert!(!out.contains("add to CHANGELOG.md"), "{out}");
+}
+
+const PYPROJECT: &str =
+    "[project]\nname = \"demo\"\nversion = \"1.3.0\"\nrequires-python = \">=3.9\"\n";
+const UV_LOCK: &str = "version = 1\nrequires-python = \">=3.9\"\n\n[[package]]\nname = \"demo\"\nversion = \"1.3.0\"\nsource = { virtual = \".\" }\n";
+
+fn python(repo: &Repo) {
+    repo.write("pyproject.toml", PYPROJECT);
+    repo.write("uv.lock", UV_LOCK);
+    repo.commit_all();
+}
+
+#[test]
+fn python_pre_release_uses_pep440() {
+    let repo = Repo::new();
+    python(&repo);
+
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    assert_eq!(
+        repo.read("pyproject.toml"),
+        PYPROJECT.replace("1.3.0", "1.4.0rc1")
+    );
+    assert_eq!(repo.read("uv.lock"), UV_LOCK.replace("1.3.0", "1.4.0rc1"));
+    assert_eq!(repo.tags(), ["v1.4.0-rc.1"]);
+    let out = repo.kraken(&["version"]);
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.4.0-rc.1\n");
+}
+
+#[test]
+fn python_pre_release_counts_up_from_the_pep440_spelling() {
+    let repo = Repo::new();
+    python(&repo);
+    assert_ok(&repo.kraken(&["minor", "--pre", "beta", "--yes"]));
+    assert!(repo.read("pyproject.toml").contains("1.4.0b1"));
+
+    assert_ok(&repo.kraken(&["--pre", "rc", "--yes"]));
+    assert_ok(&repo.kraken(&["--pre", "rc", "--yes"]));
+
+    assert!(repo.read("pyproject.toml").contains("\"1.4.0rc2\""));
+    assert_ok(&repo.kraken(&["minor", "--yes"]));
+    assert!(repo.read("pyproject.toml").contains("\"1.4.0\""));
+}
+
+#[test]
+fn python_dry_run_names_the_other_spelling() {
+    let repo = Repo::new();
+    python(&repo);
+
+    let out = repo.kraken(&["minor", "--pre", "rc", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains(
+            "  tag v1.4.0-rc.1\n  write 1.4.0rc1 to pyproject.toml, uv.lock: the PEP 440 spelling\n"
+        ),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn python_in_another_pre_release_spelling_is_refused() {
+    let repo = Repo::new();
+    repo.write(
+        "pyproject.toml",
+        "[project]\nname = \"demo\"\nversion = \"1.4.0-rc.1\"\n",
+    );
+    repo.commit_all();
+
+    assert_failed_with(
+        &repo.kraken(&["patch", "--yes"]),
+        "pyproject.toml: \"1.4.0-rc.1\" is not X.Y.Z or X.Y.Z with aN, bN or rcN, such as 1.4.0rc1",
+    );
+}
+
+#[test]
+fn version_files_in_two_spellings_agree() {
+    let repo = Repo::new();
+    repo.write("package.json", "{ \"version\": \"1.4.0-rc.1\" }\n");
+    repo.write(
+        "pyproject.toml",
+        "[project]\nname = \"demo\"\nversion = \"1.4.0rc1\"\n",
+    );
+    repo.commit_all();
+
+    let out = repo.kraken(&["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.4.0-rc.1\n");
+}
+
+#[test]
+fn version_prints_a_pre_release() {
+    let repo = Repo::new();
+    repo.write("VERSION", "1.4.0-rc.1\n");
+    repo.commit_all();
+
+    let out = repo.kraken(&["version"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.4.0-rc.1\n");
+}
+
+#[test]
+fn rust_pre_release_updates_cargo_lock() {
+    let repo = Repo::new();
+    repo.write("Cargo.toml", CARGO_TOML);
+    repo.write("Cargo.lock", CARGO_LOCK);
+    repo.write("src/lib.rs", "");
+    repo.commit_all();
+
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    assert_eq!(
+        repo.read("Cargo.toml"),
+        CARGO_TOML.replace("0.1.0", "0.2.0-rc.1")
+    );
+    assert_eq!(
+        repo.read("Cargo.lock"),
+        CARGO_LOCK.replace("0.1.0", "0.2.0-rc.1")
+    );
+    assert_eq!(repo.tags(), ["v0.2.0-rc.1"]);
+}
+
+#[test]
+fn rust_workspace_pre_release_with_a_path_dependency_without_version() {
+    let repo = Repo::new();
+    rust_workspace(&repo);
+    repo.write(
+        "app/Cargo.toml",
+        "[package]\nname = \"app\"\nversion.workspace = true\nedition = \"2021\"\n\n[dependencies]\nengine = { path = \"../engine\" }\n",
+    );
+    repo.git(&["commit", "-q", "-a", "-m", "drop the version"]);
+
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    assert_eq!(
+        repo.read("Cargo.lock"),
+        WORKSPACE_LOCK.replace("0.1.0", "0.2.0-rc.1")
+    );
+}
+
+#[test]
+fn xcode_refuses_a_pre_release() {
+    const PBXPROJ: &str = "\t\tMARKETING_VERSION = 1.2.3;\n";
+    let repo = Repo::new();
+    repo.write("App.xcodeproj/project.pbxproj", PBXPROJ);
+    repo.commit_all();
+
+    let out = repo.kraken(&["minor", "--pre", "rc", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "error: App.xcodeproj/project.pbxproj: MARKETING_VERSION takes numbers only, so it cannot be 1.3.0-rc.1",
+    );
+    assert_eq!(repo.read("App.xcodeproj/project.pbxproj"), PBXPROJ);
+    assert_eq!(repo.status(), "");
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn xcodegen_refuses_a_pre_release() {
+    let repo = Repo::new();
+    repo.write("project.yml", PROJECT_YML);
+    repo.commit_all();
+
+    let out = repo.kraken(&["minor", "--pre", "rc", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "error: project.yml: MARKETING_VERSION takes numbers only, so it cannot be 1.3.0-rc.1",
+    );
+    assert_eq!(repo.read("project.yml"), PROJECT_YML);
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn xcode_project_at_a_pre_release_is_refused_on_reading() {
+    let repo = Repo::new();
+    repo.write(
+        "App.xcodeproj/project.pbxproj",
+        "\t\tMARKETING_VERSION = 1.4.0-rc.1;\n",
+    );
+    repo.commit_all();
+
+    assert_failed_with(
+        &repo.kraken(&["version"]),
+        "App.xcodeproj/project.pbxproj: \"1.4.0-rc.1\": MARKETING_VERSION takes numbers only",
+    );
+}
+
+#[test]
+fn composer_pre_release_with_an_unknown_label_is_refused() {
+    let repo = Repo::new();
+    repo.write(
+        "composer.json",
+        "{ \"name\": \"a/b\", \"version\": \"1.4.0-preview.1\" }\n",
+    );
+    repo.commit_all();
+
+    assert_failed_with(
+        &repo.kraken(&["version"]),
+        "composer.json: \"1.4.0-preview.1\": Composer takes only the labels alpha, beta, RC, patch and dev",
+    );
+}
+
+#[test]
+fn web_extension_refuses_a_pre_release() {
+    const MANIFEST: &str = "{ \"manifest_version\": 3, \"version\": \"1.2.3\" }\n";
+    let repo = Repo::new();
+    repo.write("manifest.json", MANIFEST);
+    repo.commit_all();
+
+    let out = repo.kraken(&["minor", "--pre", "rc", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "error: manifest.json: a browser extension's version takes numbers only, so it cannot be 1.3.0-rc.1",
+    );
+    assert_eq!(repo.read("manifest.json"), MANIFEST);
+}
+
+#[test]
+fn dotnet_version_prefix_refuses_a_pre_release() {
+    const PROPS: &str =
+        "<Project><PropertyGroup><VersionPrefix>1.2.3</VersionPrefix></PropertyGroup></Project>\n";
+    let repo = Repo::new();
+    repo.write("Directory.Build.props", PROPS);
+    repo.commit_all();
+
+    let out = repo.kraken(&["minor", "--pre", "rc", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "error: Directory.Build.props: <VersionPrefix> holds X.Y.Z only, so it cannot be 1.3.0-rc.1",
+    );
+    assert_eq!(repo.read("Directory.Build.props"), PROPS);
+}
+
+#[test]
+fn dotnet_version_prefix_refuses_a_pre_release_dry_run() {
+    const PROPS: &str =
+        "<Project><PropertyGroup><VersionPrefix>1.2.3</VersionPrefix></PropertyGroup></Project>\n";
+    let repo = Repo::new();
+    repo.write("Directory.Build.props", PROPS);
+    repo.commit_all();
+
+    let out = repo.kraken(&["minor", "--pre", "rc", "--dry-run"]);
+
+    assert_failed_with(
+        &out,
+        "error: Directory.Build.props: <VersionPrefix> holds X.Y.Z only, so it cannot be 1.3.0-rc.1",
+    );
+}
+
+#[test]
+fn tag_only_pre_release_keeps_tag_style() {
+    let repo = Repo::new();
+    repo.write("main.go", "package main\n");
+    repo.commit_all();
+    repo.git(&["tag", "1.0.0"]);
+    let head = repo.head();
+
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+
+    assert_eq!(repo.head(), head);
+    assert_eq!(repo.tag_commit("1.1.0-rc.1"), head);
+}
+
+#[test]
+fn tag_only_pre_release_continues_from_the_pre_release_tag() {
+    let repo = Repo::new();
+    repo.write("main.go", "package main\n");
+    repo.commit_all();
+    repo.git(&["tag", "v1.0.0"]);
+    repo.commit("feat: a");
+    repo.git(&["tag", "v1.1.0-rc.1"]);
+    repo.commit("fix: b");
+
+    assert_ok(&repo.kraken(&["--pre", "rc", "--yes"]));
+
+    assert!(repo.tags().contains(&"v1.1.0-rc.2".to_string()));
+}
+
+#[test]
+fn refuses_a_final_below_a_pre_release_tag() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.10.0"]);
+    repo.git(&["tag", "v2.0.0-rc.1"]);
+
+    assert_failed_with(
+        &repo.kraken(&["patch", "--yes"]),
+        "not higher than the latest tag v2.0.0-rc.1",
+    );
+    assert_eq!(repo.read("package.json"), PACKAGE_JSON);
+}
+
+#[test]
+fn refuses_when_origin_has_pre_release_tags_missing_here() {
+    let source = Repo::new();
+    source.write("main.go", "package main\n");
+    source.commit_all();
+    source.git(&["tag", "v1.4.0-rc.1"]);
+    let clone = tempfile::tempdir().unwrap();
+    let url = format!("file://{}", source.path().display());
+    git_in(clone.path(), &["clone", "-q", "--no-tags", &url, "repo"]);
+    let repo = clone.path().join("repo");
+
+    assert_failed_with(&kraken_in(&repo, &["patch", "--yes"]), "v1.4.0-rc.1");
+
+    assert_eq!(git_in(&repo, &["tag", "--list"]), "");
+}
+
+#[test]
+fn gradle_snapshot_releases_the_final_version() {
+    let repo = Repo::new();
+    repo.write("gradle.properties", "version=1.4.0-SNAPSHOT\n");
+    repo.commit_all();
+
+    assert_ok(&repo.kraken(&["minor", "--yes"]));
+
+    assert_eq!(repo.read("gradle.properties"), "version=1.4.0\n");
+    assert_eq!(repo.tags(), ["v1.4.0"]);
+}
+
+#[test]
+fn summary_counts_the_commits_since_the_latest_final_tag() {
+    let repo = Repo::new();
+    repo.node();
+    repo.git(&["tag", "v1.2.3"]);
+    repo.commit("feat: a");
+    assert_ok(&repo.kraken(&["minor", "--pre", "rc", "--yes"]));
+    repo.commit("fix: b");
+
+    let out = repo.kraken(&["--pre", "rc", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("Changes: 1 feature, 1 fix, 1 other commit since v1.2.3"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn version_next_with_pre_prints_the_pre_release() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+
+    let out = repo.kraken(&["version", "--next", "--pre", "rc"]);
+
+    assert_ok(&out);
+    assert_eq!(stdout(&out), "1.3.0-rc.1\n");
+    let dry_run = stdout(&repo.kraken(&["auto", "--pre", "rc", "--dry-run"]));
+    assert!(dry_run.contains("  tag v1.3.0-rc.1"), "{dry_run}");
+}
+
+#[test]
+fn auto_pre_takes_the_level_from_the_commits() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("fix: a");
+
+    assert_ok(&repo.kraken(&["auto", "--pre", "beta", "--yes"]));
+
+    assert_eq!(repo.tags(), ["v1.2.3", "v1.2.4-beta.1"]);
+}
+
+#[test]
+fn auto_from_a_pre_release_never_goes_below_its_level() {
+    let repo = Repo::new();
+    node_tagged(&repo);
+    repo.commit("feat: a");
+    assert_ok(&repo.kraken(&["auto", "--pre", "rc", "--yes"]));
+    repo.commit("fix: b");
+
+    assert_ok(&repo.kraken(&["auto", "--yes"]));
+
+    assert!(repo.tags().contains(&"v1.3.0".to_string()));
+}
+
+#[test]
+fn yes_and_dry_run_need_a_level_or_pre() {
+    let repo = Repo::new();
+    repo.node();
+
+    for flag in ["--yes", "--dry-run"] {
+        assert_failed_with(&repo.kraken(&[flag]), "<LEVEL|--pre <LABEL>>");
+    }
+}
+
+#[test]
+fn pre_alone_continues_a_pre_release_in_a_dry_run() {
+    let repo = Repo::new();
+    repo.node();
+    assert_ok(&repo.kraken(&["minor", "--pre", "alpha", "--yes"]));
+
+    let out = repo.kraken(&["--pre", "alpha", "--dry-run"]);
+
+    assert_ok(&out);
+    assert!(
+        stdout(&out).contains("tag v1.3.0-alpha.2"),
+        "{}",
+        stdout(&out)
     );
 }

@@ -35,7 +35,11 @@ pub fn read_version(text: &str) -> Result<Option<String>> {
 }
 
 pub fn set_version(text: &str, version: &str) -> Result<String> {
-    let ranges: Vec<_> = properties(text)?.into_iter().map(|p| p.range).collect();
+    let properties = properties(text)?;
+    if version.contains('-') && properties.iter().any(|p| p.name == "VersionPrefix") {
+        bail!("<VersionPrefix> holds X.Y.Z only, so it cannot be {version}");
+    }
+    let ranges: Vec<_> = properties.into_iter().map(|p| p.range).collect();
     Ok(replace_ranges(text, &ranges, version))
 }
 
@@ -276,6 +280,23 @@ mod tests {
         );
         let out = set_version(&text, "1.2.4").unwrap();
         assert_eq!(out, text.replace("1.2.3", "1.2.4"));
+    }
+
+    #[test]
+    fn version_takes_a_pre_release() {
+        let text = group("<Version>1.2.3</Version><PackageVersion>1.2.3</PackageVersion>");
+        let out = set_version(&text, "1.4.0-rc.1").unwrap();
+        assert_eq!(out, text.replace("1.2.3", "1.4.0-rc.1"));
+    }
+
+    #[test]
+    fn version_prefix_refuses_a_pre_release() {
+        let text = group("<VersionPrefix>1.2.3</VersionPrefix>");
+        let err = set_version(&text, "1.4.0-rc.1").unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "<VersionPrefix> holds X.Y.Z only, so it cannot be 1.4.0-rc.1"
+        );
     }
 
     #[test]
