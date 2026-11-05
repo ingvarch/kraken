@@ -14,4 +14,5 @@ What kraken does not support. What it does support is in [how-it-works.md](how-i
 - kraken does not move what you wrote under `## [Unreleased]` into the new section. They stay there after the release; move them into the release section yourself.
 - A version set in `build.gradle` or `build.gradle.kts` is code, and kraken does not read it. Put the version in `gradle.properties`.
 - In an Xcode project kraken sets `MARKETING_VERSION` and leaves `CURRENT_PROJECT_VERSION` (the build number) as it is. kraken refuses a repository with more than one `.xcodeproj` that sets `MARKETING_VERSION`; a project that git ignores does not count. Every `MARKETING_VERSION` in `project.pbxproj` (or `project.yml`) must be the same `X.Y.Z` version, test targets included. Xcode starts new targets at `1.0`, so set them to the app's version once before the first release.
+- kraken reads `composer.json` only when it sets `version`. Composer advises leaving it out; then kraken works with tags. A `v` before the version is refused.
 - In `pubspec.yaml` kraken sets the version before `+` and leaves the build number after it as it is, as it does with `CURRENT_PROJECT_VERSION` in Xcode.

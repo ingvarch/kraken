@@ -33,11 +33,11 @@ pub fn set_lock_version(text: &str, version: &str) -> Result<String> {
     Ok(root.to_string())
 }
 
-fn parse(text: &str) -> Result<CstRootNode> {
+pub(super) fn parse(text: &str) -> Result<CstRootNode> {
     Ok(CstRootNode::parse(text, &ParseOptions::default())?)
 }
 
-fn set_string(object: Option<CstObject>, key: &str, value: &str) {
+pub(super) fn set_string(object: Option<CstObject>, key: &str, value: &str) {
     if let Some(prop) = object.and_then(|object| object.get(key)) {
         prop.set_value(CstInputValue::String(value.to_string()));
     }
