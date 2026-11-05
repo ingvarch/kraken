@@ -9,7 +9,9 @@ use semver::Version;
 use crate::commit::{Commit, Kind};
 use crate::git::Git;
 use crate::manifest;
-use crate::origin::Pages;
+use crate::origin::{self, Pages};
+use crate::release::ORIGIN;
+use crate::version::release_tags;
 
 pub const FILE: &str = "CHANGELOG.md";
 
@@ -32,7 +34,8 @@ pub const TEMPLATE: &str = concat!(
 /// What `kraken changelog` did.
 #[derive(Debug, PartialEq)]
 pub enum Setup {
-    Created,
+    /// With a section for each of `releases` past releases.
+    Created { releases: usize },
     /// CHANGELOG.md was there already, with [`KRAKEN_LINE`].
     Ready,
 }
@@ -45,15 +48,7 @@ pub struct Changes {
 impl Changes {
     /// The section for `version`, dated `date` (`YYYY-MM-DD`).
     pub fn section(&self, version: &Version, date: String) -> Section {
-        let mut groups: BTreeMap<Group, Vec<Entry>> = BTreeMap::new();
-        for (group, entry) in self.commits.iter().filter_map(entry) {
-            groups.entry(group).or_default().push(entry);
-        }
-        Section {
-            version: version.clone(),
-            date,
-            groups: groups.into_iter().collect(),
-        }
+        Section::new(version, &date, &self.commits)
     }
 }
 
@@ -67,6 +62,19 @@ pub struct Section {
 }
 
 impl Section {
+    /// The section for `version`, dated `date` (`YYYY-MM-DD`), of `commits` oldest first.
+    pub fn new(version: &Version, date: &str, commits: &[Commit]) -> Section {
+        let mut groups: BTreeMap<Group, Vec<Entry>> = BTreeMap::new();
+        for (group, entry) in commits.iter().filter_map(entry) {
+            groups.entry(group).or_default().push(entry);
+        }
+        Section {
+            version: version.clone(),
+            date: date.to_string(),
+            groups: groups.into_iter().collect(),
+        }
+    }
+
     pub fn markdown(&self) -> String {
         let mut text = format!("## [{}] - {}\n", self.version, self.date);
         for (group, entries) in &self.groups {
@@ -283,6 +291,23 @@ fn is_release_heading(line: &str) -> bool {
     })
 }
 
+/// [`TEMPLATE`] with `sections`, newest first, and the link definitions `links` at the end.
+pub fn history(sections: &[Section], links: &[String]) -> String {
+    let mut text = TEMPLATE.to_string();
+    for section in sections {
+        text.push('\n');
+        text.push_str(&section.markdown());
+    }
+    if !links.is_empty() {
+        text.push('\n');
+        for link in links {
+            text.push_str(link);
+            text.push('\n');
+        }
+    }
+    text
+}
+
 /// The date of a git ident such as `Name <email> 1762300800 +0100`, in its time zone.
 pub fn ident_date(ident: &str) -> Result<String> {
     let mut parts = ident.rsplitn(3, ' ');
@@ -356,17 +381,62 @@ fn has_kraken_line(text: &[u8]) -> bool {
         .any(|line| line.trim_ascii_end() == KRAKEN_LINE.as_bytes())
 }
 
+/// The text of a new CHANGELOG.md and the number of releases in it: a section for every
+/// final release tag reachable from HEAD, with links on a known host. Reads git only.
+fn new_file(git: &Git) -> Result<(String, usize)> {
+    if git.head().is_err() {
+        return Ok((TEMPLATE.to_string(), 0));
+    }
+    git.ensure_not_shallow()?;
+    let dates = git.merged_tag_dates()?;
+    let names: Vec<String> = dates.iter().map(|(name, _)| name.clone()).collect();
+    let releases: Vec<(&str, Version)> = release_tags(&names)
+        .into_iter()
+        .filter(|(_, version)| version.pre.is_empty())
+        .collect();
+    if releases.is_empty() {
+        return Ok((TEMPLATE.to_string(), 0));
+    }
+    let pages = if git.has_remote(ORIGIN)? {
+        origin::resolve(&git.push_url(ORIGIN)?, git.root())
+            .as_ref()
+            .and_then(Pages::of)
+    } else {
+        None
+    };
+    let mut sections = Vec::new();
+    let mut links = Vec::new();
+    let mut below = None;
+    for (tag, version) in &releases {
+        let date = dates
+            .iter()
+            .find_map(|(name, date)| (name == tag).then_some(date))
+            .expect("the tag comes from the dates");
+        sections.push(Section::new(version, date, &git.commits_of(below, tag)?));
+        if let Some(pages) = &pages {
+            links.push(link_line(version, &pages.release_page(below, tag)));
+        }
+        below = Some(*tag);
+    }
+    sections.reverse();
+    links.reverse();
+    Ok((history(&sections, &links), releases.len()))
+}
+
 /// Creates CHANGELOG.md in the root of the repository at `dir`, or checks the one there.
 pub fn create(dir: &Path) -> Result<Setup> {
     let git = Git::discover(dir)?;
     let root = git.root();
-    match File::create_new(root.join(FILE)) {
-        Ok(mut file) => {
-            file.write_all(TEMPLATE.as_bytes()).with_context(|| FILE)?;
-            return Ok(Setup::Created);
+    if root.join(FILE).symlink_metadata().is_err() {
+        let (text, releases) = new_file(&git)?;
+        match File::create_new(root.join(FILE)) {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes()).with_context(|| FILE)?;
+                return Ok(Setup::Created { releases });
+            }
+            Err(err) if err.kind() != ErrorKind::AlreadyExists => return Err(err).context(FILE),
+            Err(_) => {}
         }
-        Err(err) if err.kind() != ErrorKind::AlreadyExists => return Err(err).context(FILE),
-        Err(_) => {}
     }
     if !is_regular(root) {
         bail!(
@@ -398,6 +468,86 @@ mod tests {
         changes
             .section(&Version::new(1, 5, 0), "2026-11-04".to_string())
             .markdown()
+    }
+
+    fn release(version: Version, date: &str, subjects: &[&str]) -> Section {
+        let commits: Vec<Commit> = subjects.iter().map(|subject| commit(subject)).collect();
+        Section::new(&version, date, &commits)
+    }
+
+    #[test]
+    fn section_new_groups_like_a_release() {
+        let commits = vec![commit("fix: a"), commit("feat(ui): b"), commit("chore: c")];
+
+        let direct = Section::new(&Version::new(1, 5, 0), "2026-11-04", &commits);
+
+        let through_changes =
+            Changes { commits }.section(&Version::new(1, 5, 0), "2026-11-04".to_string());
+        assert_eq!(direct, through_changes);
+        assert_eq!(
+            direct.markdown(),
+            "## [1.5.0] - 2026-11-04\n\n### Added\n\n- **ui**: b\n\n### Fixed\n\n- a\n"
+        );
+    }
+
+    #[test]
+    fn history_puts_sections_newest_first_below_the_header() {
+        let sections = [
+            release(
+                Version::new(1, 1, 0),
+                "2026-10-01",
+                &["feat(cli): add a command"],
+            ),
+            release(Version::new(1, 0, 0), "2026-09-01", &["init"]),
+        ];
+
+        assert_eq!(
+            history(&sections, &[]),
+            format!(
+                "{TEMPLATE}\n\
+                 ## [1.1.0] - 2026-10-01\n\
+                 \n\
+                 ### Added\n\
+                 \n\
+                 - **cli**: add a command\n\
+                 \n\
+                 ## [1.0.0] - 2026-09-01\n\
+                 \n\
+                 ### Changed\n\
+                 \n\
+                 - init\n"
+            )
+        );
+    }
+
+    #[test]
+    fn history_ends_with_a_link_per_release() {
+        let sections = [
+            release(Version::new(1, 1, 0), "2026-10-01", &[]),
+            release(Version::new(1, 0, 0), "2026-09-01", &[]),
+        ];
+        let links = [
+            "[1.1.0]: https://github.com/o/r/compare/v1.0.0...v1.1.0".to_string(),
+            "[1.0.0]: https://github.com/o/r/releases/tag/v1.0.0".to_string(),
+        ];
+
+        assert_eq!(
+            history(&sections, &links),
+            format!(
+                "{TEMPLATE}\n\
+                 ## [1.1.0] - 2026-10-01\n\
+                 \n\
+                 ## [1.0.0] - 2026-09-01\n\
+                 \n\
+                 [1.1.0]: https://github.com/o/r/compare/v1.0.0...v1.1.0\n\
+                 [1.0.0]: https://github.com/o/r/releases/tag/v1.0.0\n"
+            )
+        );
+    }
+
+    #[test]
+    fn history_without_releases_is_the_template() {
+        assert_eq!(history(&[], &[]), TEMPLATE);
     }
 
     #[test]

@@ -65,7 +65,7 @@ enum Command {
         #[arg(long, value_enum, value_name = "LABEL", requires = "next")]
         pre: Option<Pre>,
     },
-    /// Create CHANGELOG.md, which every release then adds a section to
+    /// Create CHANGELOG.md with the past releases; every release then adds a section to it
     Changelog,
     /// Remove the latest release while it is not pushed: delete its tag and drop its commit
     Undo {
@@ -249,8 +249,13 @@ fn confirm(question: &str, input: &mut impl BufRead, output: &mut impl Write) ->
 fn create_changelog() -> Result<()> {
     let file = changelog::FILE;
     match changelog::create(&std::env::current_dir()?)? {
-        Setup::Created => {
-            println!("Created {file}. Commit it, and every release adds a section to it.")
+        Setup::Created { releases } => {
+            let with = match releases {
+                0 => String::new(),
+                1 => " with 1 release".to_string(),
+                n => format!(" with {n} releases"),
+            };
+            println!("Created {file}{with}. Commit it, and every release adds a section to it.")
         }
         Setup::Ready => println!(
             "{file} has the kraken line. Once it is committed, every release adds a section to it."

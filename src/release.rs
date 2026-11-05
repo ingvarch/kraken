@@ -14,7 +14,7 @@ use crate::version::{
     Level, Pre, latest_final_tag, latest_release_tag, next, release_tag_version, suggest,
 };
 
-const ORIGIN: &str = "origin";
+pub(crate) const ORIGIN: &str = "origin";
 
 /// What the repository looks like before a release.
 pub struct Release {

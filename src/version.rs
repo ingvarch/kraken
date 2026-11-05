@@ -167,19 +167,35 @@ pub fn release_tag_version(tag: &str) -> Option<Version> {
 
 /// Highest release tag, pre-releases included; other tags are ignored.
 pub fn latest_release_tag(tags: &[String]) -> Option<(&str, Version)> {
-    release_tags(tags).max_by(|a, b| a.1.cmp(&b.1))
+    release_tags(tags).pop()
 }
 
 /// Highest release tag that is not a pre-release.
 pub fn latest_final_tag(tags: &[String]) -> Option<(&str, Version)> {
     release_tags(tags)
-        .filter(|(_, version)| version.pre.is_empty())
-        .max_by(|a, b| a.1.cmp(&b.1))
+        .into_iter()
+        .rfind(|(_, version)| version.pre.is_empty())
 }
 
-fn release_tags(tags: &[String]) -> impl Iterator<Item = (&str, Version)> {
-    tags.iter()
+/// The release tags in version order, pre-releases included. With `1.2.0` and `v1.2.0`
+/// only the `v` one stays, the one `git tag --list` sorts last.
+pub fn release_tags(tags: &[String]) -> Vec<(&str, Version)> {
+    let mut found: Vec<(&str, Version)> = tags
+        .iter()
         .filter_map(|tag| release_tag_version(tag).map(|version| (tag.as_str(), version)))
+        .collect();
+    found.sort_by(|a, b| {
+        a.1.cmp(&b.1)
+            .then(a.0.starts_with('v').cmp(&b.0.starts_with('v')))
+    });
+    let mut kept: Vec<(&str, Version)> = Vec::new();
+    for tag in found {
+        match kept.last_mut() {
+            Some(last) if last.1 == tag.1 => *last = tag,
+            _ => kept.push(tag),
+        }
+    }
+    kept
 }
 
 #[cfg(test)]
@@ -309,6 +325,29 @@ mod tests {
         );
         let list = tags(&["v1.4.0-rc.10", "v1.4.0", "v1.4.0-rc.2"]);
         assert_eq!(latest_release_tag(&list), Some(("v1.4.0", v("1.4.0"))));
+    }
+
+    #[test]
+    fn release_tags_come_in_version_order() {
+        let list = tags(&["v1.10.0", "v1.2.0", "nightly", "v2.0.0-rc.1", "1.9.3"]);
+        assert_eq!(
+            release_tags(&list),
+            vec![
+                ("v1.2.0", v("1.2.0")),
+                ("1.9.3", v("1.9.3")),
+                ("v1.10.0", v("1.10.0")),
+                ("v2.0.0-rc.1", v("2.0.0-rc.1")),
+            ]
+        );
+    }
+
+    #[test]
+    fn same_version_takes_the_v_tag() {
+        for list in [tags(&["1.2.0", "v1.2.0"]), tags(&["v1.2.0", "1.2.0"])] {
+            assert_eq!(release_tags(&list), vec![("v1.2.0", v("1.2.0"))]);
+            assert_eq!(latest_release_tag(&list), Some(("v1.2.0", v("1.2.0"))));
+            assert_eq!(latest_final_tag(&list), Some(("v1.2.0", v("1.2.0"))));
+        }
     }
 
     #[test]
