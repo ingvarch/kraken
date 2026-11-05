@@ -1,6 +1,7 @@
 mod cargo;
 mod composer;
 mod gradle;
+mod msbuild;
 mod package_json;
 mod pubspec;
 mod pyproject;
@@ -33,10 +34,12 @@ pub enum Kind {
     Pubspec,
     Composer,
     WebExtension,
+    MsBuildProps,
+    DotnetProject,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 12] = [
+    pub const ALL: [Kind; 14] = [
         Kind::PackageJson,
         Kind::CargoToml,
         Kind::Pyproject,
@@ -49,6 +52,8 @@ impl Kind {
         Kind::Pubspec,
         Kind::Composer,
         Kind::WebExtension,
+        Kind::MsBuildProps,
+        Kind::DotnetProject,
     ];
 
     /// The path of this kind's file in `root`, relative to it, or `None` when there is none.
@@ -70,6 +75,8 @@ impl Kind {
             Kind::Pubspec => &["pubspec.yaml"],
             Kind::Composer => &["composer.json"],
             Kind::WebExtension => &["manifest.json"],
+            Kind::MsBuildProps => &["Directory.Build.props"],
+            Kind::DotnetProject => return msbuild::find_project(root, is_ignored),
             Kind::Xcode => return xcode::find(root, is_ignored),
         };
         for path in names.iter().filter_map(|name| existing(root, name)) {
@@ -95,7 +102,9 @@ impl Kind {
             | Kind::Gradle
             | Kind::Xcode
             | Kind::Pubspec
-            | Kind::WebExtension => {
+            | Kind::WebExtension
+            | Kind::MsBuildProps
+            | Kind::DotnetProject => {
                 return Ok(None);
             }
         };
@@ -115,6 +124,7 @@ impl Kind {
             Kind::Xcode => xcode::read_version(text),
             Kind::Pubspec => pubspec::read_version(text),
             Kind::WebExtension => web_extension::read_version(text),
+            Kind::MsBuildProps | Kind::DotnetProject => msbuild::read_version(text),
         }
     }
 
@@ -131,6 +141,7 @@ impl Kind {
             Kind::Xcode => xcode::set_version(text, version),
             Kind::Pubspec => pubspec::set_version(text, version),
             Kind::WebExtension => web_extension::set_version(text, version),
+            Kind::MsBuildProps | Kind::DotnetProject => msbuild::set_version(text, version),
         }
     }
 
@@ -149,7 +160,9 @@ impl Kind {
             | Kind::Xcode
             | Kind::Pubspec
             | Kind::Composer
-            | Kind::WebExtension => Ok(()),
+            | Kind::WebExtension
+            | Kind::MsBuildProps
+            | Kind::DotnetProject => Ok(()),
         }
     }
 
@@ -170,7 +183,9 @@ impl Kind {
             | Kind::Gradle
             | Kind::Xcode
             | Kind::Pubspec
-            | Kind::WebExtension => Ok(lock.to_string()),
+            | Kind::WebExtension
+            | Kind::MsBuildProps
+            | Kind::DotnetProject => Ok(lock.to_string()),
         }
     }
 }
@@ -211,6 +226,16 @@ pub fn detect(root: &Path, is_ignored: impl Fn(&str) -> Result<bool>) -> Result<
         }
     }
     Ok(found)
+}
+
+/// The one name in `found`, `None` for none; several are refused as "more than one `what`".
+fn single(mut found: Vec<String>, what: &str) -> Result<Option<String>> {
+    found.sort();
+    match found.as_slice() {
+        [] => Ok(None),
+        [name] => Ok(Some(name.clone())),
+        _ => bail!("more than one {what}: {}", found.join(", ")),
+    }
 }
 
 /// `name` when `root` has a regular file with exactly that name, whatever the file system's case rules.
@@ -450,6 +475,101 @@ mod tests {
         std::os::unix::fs::symlink("real/App.xcodeproj", dir.path().join("App.xcodeproj")).unwrap();
 
         assert_eq!(find(Kind::Xcode, dir.path()), None);
+    }
+
+    const VERSIONED_CSPROJ: &str =
+        "<Project><PropertyGroup><Version>1.2.3</Version></PropertyGroup></Project>";
+
+    #[test]
+    fn dotnet_project_finds_the_single_csproj_that_sets_a_version() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Tool.csproj"), "<Project />").unwrap();
+        fs::create_dir(dir.path().join("Dir.csproj")).unwrap();
+        assert_eq!(find(Kind::DotnetProject, dir.path()), None);
+
+        fs::write(dir.path().join("App.csproj"), VERSIONED_CSPROJ).unwrap();
+        assert_eq!(
+            find(Kind::DotnetProject, dir.path()).as_deref(),
+            Some("App.csproj")
+        );
+    }
+
+    #[test]
+    fn dotnet_project_skips_a_symlinked_project() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("real")).unwrap();
+        fs::write(dir.path().join("real/App.csproj"), VERSIONED_CSPROJ).unwrap();
+        std::os::unix::fs::symlink("real/App.csproj", dir.path().join("App.csproj")).unwrap();
+
+        assert_eq!(find(Kind::DotnetProject, dir.path()), None);
+    }
+
+    #[test]
+    fn dotnet_project_counts_fsproj_and_vbproj() {
+        for name in ["App.fsproj", "App.vbproj"] {
+            let dir = tempfile::tempdir().unwrap();
+            fs::write(dir.path().join(name), VERSIONED_CSPROJ).unwrap();
+            assert_eq!(find(Kind::DotnetProject, dir.path()).as_deref(), Some(name));
+        }
+    }
+
+    #[test]
+    fn dotnet_project_refuses_several() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["Zed.csproj", "App.csproj"] {
+            fs::write(dir.path().join(name), VERSIONED_CSPROJ).unwrap();
+        }
+        let err = Kind::DotnetProject
+            .find(dir.path(), |_| Ok(false))
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "more than one project file sets a version: App.csproj, Zed.csproj"
+        );
+    }
+
+    #[test]
+    fn dotnet_project_skips_one_that_git_ignores() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["Zed.csproj", "App.csproj"] {
+            fs::write(dir.path().join(name), VERSIONED_CSPROJ).unwrap();
+        }
+        let found = Kind::DotnetProject
+            .find(dir.path(), |path| Ok(path == "Zed.csproj"))
+            .unwrap();
+        assert_eq!(found.as_deref(), Some("App.csproj"));
+    }
+
+    #[test]
+    fn dotnet_project_names_a_file_that_is_not_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("App.csproj"), [0xff, 0xfe, b'<', 0]).unwrap();
+        let err = Kind::DotnetProject
+            .find(dir.path(), |_| Ok(false))
+            .unwrap_err();
+        assert!(format!("{err:#}").starts_with("App.csproj: "));
+    }
+
+    #[test]
+    fn directory_build_props_must_be_named_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("directory.build.props"), VERSIONED_CSPROJ).unwrap();
+        assert_eq!(find(Kind::MsBuildProps, dir.path()), None);
+
+        fs::remove_file(dir.path().join("directory.build.props")).unwrap();
+        fs::write(dir.path().join("Directory.Build.props"), VERSIONED_CSPROJ).unwrap();
+        assert_eq!(
+            find(Kind::MsBuildProps, dir.path()).as_deref(),
+            Some("Directory.Build.props")
+        );
+    }
+
+    #[test]
+    fn dotnet_files_have_no_lock_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("packages.lock.json"), "{}").unwrap();
+        assert_eq!(Kind::MsBuildProps.lock_file(dir.path()).unwrap(), None);
+        assert_eq!(Kind::DotnetProject.lock_file(dir.path()).unwrap(), None);
     }
 
     #[test]

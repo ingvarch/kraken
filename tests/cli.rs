@@ -2779,3 +2779,78 @@ fn refuses_a_two_number_extension_version() {
     assert_eq!(repo.status(), "");
     assert!(repo.tags().is_empty());
 }
+
+const BUILD_PROPS: &str = "<Project>\n  <PropertyGroup>\n    <!-- <Version>0.9.0</Version> -->\n    <VersionPrefix>1.2.3</VersionPrefix>\n    <AssemblyVersion>1.0.0.0</AssemblyVersion>\n  </PropertyGroup>\n</Project>\n";
+const VERSIONLESS_CSPROJ: &str = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n";
+
+#[test]
+fn directory_build_props_patch_release() {
+    let repo = Repo::new();
+    repo.write("Directory.Build.props", BUILD_PROPS);
+    repo.write("src/App/App.csproj", VERSIONLESS_CSPROJ);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("Directory.Build.props"),
+        BUILD_PROPS.replace("<VersionPrefix>1.2.3<", "<VersionPrefix>1.2.4<")
+    );
+    assert_eq!(repo.read("src/App/App.csproj"), VERSIONLESS_CSPROJ);
+    assert_eq!(
+        repo.git(&["log", "-1", "--format=%s"]),
+        "chore(release): v1.2.4"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn csproj_patch_release_keeps_the_bom() {
+    let csproj = "\u{feff}<Project Sdk=\"Microsoft.NET.Sdk\">\r\n  <PropertyGroup>\r\n    <Version>1.2.3</Version>\r\n  </PropertyGroup>\r\n</Project>\r\n";
+    let repo = Repo::new();
+    repo.write("App.csproj", csproj);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.read("App.csproj"), csproj.replace("1.2.3", "1.2.4"));
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn refuses_disagreeing_directory_build_props_and_csproj() {
+    let repo = Repo::new();
+    repo.write("Directory.Build.props", BUILD_PROPS);
+    repo.write(
+        "App.csproj",
+        "<Project><PropertyGroup><Version>1.3.0</Version></PropertyGroup></Project>",
+    );
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "version files disagree: Directory.Build.props 1.2.3, App.csproj 1.3.0",
+    );
+}
+
+#[test]
+fn refuses_two_project_files_that_set_a_version() {
+    let csproj = "<Project><PropertyGroup><Version>1.2.3</Version></PropertyGroup></Project>";
+    let repo = Repo::new();
+    repo.write("App.csproj", csproj);
+    repo.write("Api.csproj", csproj);
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "more than one project file sets a version: Api.csproj, App.csproj",
+    );
+}

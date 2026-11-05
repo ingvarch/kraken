@@ -475,6 +475,8 @@ mod tests {
                 Kind::Pubspec => "pubspec.yaml",
                 Kind::Composer => "composer.json",
                 Kind::WebExtension => "manifest.json",
+                Kind::MsBuildProps => "Directory.Build.props",
+                Kind::DotnetProject => "App.csproj",
             }
             .to_string(),
             lock: None,
