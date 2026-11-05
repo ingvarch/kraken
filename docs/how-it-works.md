@@ -46,7 +46,7 @@ A footer under a subject that is not a conventional commit does not count.
 
 While the major version is 0, a breaking change suggests minor, and so does a feature. Semver lets anything change before 1.0.0, and Cargo and npm treat a 0.x minor bump as breaking. kraken never suggests 1.0.0. Choose `major` when you are ready to leave 0.x.
 
-The panel's level screen starts on the suggested level and shows the counts in the `Changes` row, such as `2 features, 1 fix since v1.4.2`. The plain output prints the same counts as `Changes:` after `Current version:`. With no commits since the latest tag there is no suggestion, the panel starts on patch, and a release with an explicit level works as before.
+The panel's level screen starts on the suggested level and shows the counts in the `Changes` row, such as `2 features, 1 fix since v1.4.2`. The plain output prints the same counts as `Changes:` after `Current version:`. With no commits since the latest tag there is no suggestion, the panel starts on patch, and a release with an explicit level goes on after a warning: `! no commits since v1.4.2` in the panel, `warning: no commits since v1.4.2` on stderr with `--yes` or `--dry-run`. A first release, with no tag yet, never warns.
 
 `kraken auto` releases at the suggested level and prints it as `Level: minor` after the `Changes:` line. In 0.x with a breaking change it prints `Level: minor (breaking changes bump minor in 0.x)`. With no commits since the latest tag it fails with `no commits since v1.4.2; nothing to release`, before it asks origin, so a second run in CI does not release the same code twice. Everything after the level is the same as for a level given by name.
 
