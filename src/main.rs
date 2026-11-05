@@ -2,7 +2,8 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 
 use anyhow::{Result, bail};
-use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::env::{Bash, CompleteEnv, EnvCompleter, Fish, Shells, Zsh};
 use kraken::changelog::{self, Setup};
 use kraken::commit::Tally;
 use kraken::github::GitHubRelease;
@@ -82,9 +83,56 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Print the completion script for a shell
+    Completions {
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+}
+
+const COMPLETE_VAR: &str = "COMPLETE";
+const BIN: &str = "kraken";
+
+/// The zsh script only registers itself. From `fpath` zsh autoloads `_kraken` on
+/// the first Tab, so the file has to complete too.
+// Tech debt: clap_complete's dynamic zsh script lacks this; drop it once a release has it.
+// See https://github.com/clap-rs/clap/issues/5668#issuecomment-4131427783
+const ZSH_FIRST_TAB: &str = r#"
+if [ "$funcstack[1]" = "_kraken" ]; then
+    _clap_dynamic_completer_kraken "$@"
+fi
+"#;
+
+fn completer() -> CompleteEnv<'static, fn() -> clap::Command> {
+    CompleteEnv::with_factory(Cli::command as fn() -> clap::Command)
+        .var(COMPLETE_VAR)
+        .completer(BIN)
+        .shells(Shells(&[&Bash, &Zsh, &Fish]))
+}
+
+fn print_completions(shell: Shell) -> Result<()> {
+    let mut out = io::stdout().lock();
+    let registration: &dyn EnvCompleter = match shell {
+        Shell::Bash => &Bash,
+        Shell::Zsh => &Zsh,
+        Shell::Fish => &Fish,
+    };
+    registration.write_registration(COMPLETE_VAR, BIN, BIN, BIN, &mut out)?;
+    if matches!(shell, Shell::Zsh) {
+        out.write_all(ZSH_FIRST_TAB.as_bytes())?;
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {
+    completer().complete();
     match run(&Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -99,6 +147,7 @@ fn run(cli: &Cli) -> Result<()> {
         Some(Command::Version { next, pre }) => return print_version(next, pre),
         Some(Command::Changelog) => return create_changelog(),
         Some(Command::Undo { yes, dry_run }) => return undo(yes, dry_run),
+        Some(Command::Completions { shell }) => return print_completions(shell),
         None => {}
     }
     let options = Options {
@@ -656,6 +705,77 @@ mod tests {
             })
         ));
         assert!(parse(&["undo", "patch"]).is_err());
+    }
+
+    use clap_complete::engine::complete;
+    use std::ffi::OsString;
+
+    fn offered(words: &[&str]) -> Vec<String> {
+        let mut command = Cli::command();
+        let args: Vec<OsString> = words.iter().map(OsString::from).collect();
+        let index = args.len() - 1;
+        complete(&mut command, args, index, None)
+            .unwrap()
+            .iter()
+            .map(|candidate| candidate.get_value().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn assert_offers(words: &[&str], expected: impl IntoIterator<Item = String>) {
+        let got = offered(words);
+        for want in expected {
+            assert!(
+                got.contains(&want),
+                "{want} missing after {words:?}: {got:?}"
+            );
+        }
+    }
+
+    fn long_flags(command: &clap::Command) -> Vec<String> {
+        command
+            .get_arguments()
+            .filter_map(|arg| arg.get_long())
+            .map(|long| format!("--{long}"))
+            .collect()
+    }
+
+    fn takes_value(arg: &clap::Arg) -> bool {
+        arg.get_long().is_some() && arg.get_action().takes_values()
+    }
+
+    fn values(arg: &clap::Arg) -> Vec<String> {
+        arg.get_possible_values()
+            .iter()
+            .map(|value| value.get_name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn completions_offer_every_subcommand_and_flag() {
+        let root = Cli::command();
+        assert_offers(
+            &["kraken", ""],
+            root.get_subcommands().map(|sub| sub.get_name().to_string()),
+        );
+        assert_offers(&["kraken", "minor", "--"], long_flags(&root));
+        for arg in root.get_positionals() {
+            assert_offers(&["kraken", ""], values(arg));
+        }
+        for arg in root.get_arguments().filter(|arg| takes_value(arg)) {
+            let long = format!("--{}", arg.get_long().unwrap());
+            assert_offers(&["kraken", "minor", &long, ""], values(arg));
+        }
+        for sub in root.get_subcommands() {
+            let name = sub.get_name();
+            assert_offers(&["kraken", name, "--"], long_flags(sub));
+            for arg in sub.get_positionals() {
+                assert_offers(&["kraken", name, ""], values(arg));
+            }
+            for arg in sub.get_arguments().filter(|arg| takes_value(arg)) {
+                let long = format!("--{}", arg.get_long().unwrap());
+                assert_offers(&["kraken", name, &long, ""], values(arg));
+            }
+        }
     }
 
     #[test]

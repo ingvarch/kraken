@@ -17,6 +17,7 @@ kraken [patch|minor|major|auto] [--pre alpha|beta|rc] [--yes] [--dry-run] [--no-
 kraken version [--next [--pre alpha|beta|rc]]
 kraken changelog
 kraken undo [--yes] [--dry-run]
+kraken completions <bash|zsh|fish>
 ```
 
 - `kraken` opens a full-screen panel. It starts on the level the commits since the latest final release tag suggest and counts them in the `Changes` row. Pick the level with the arrow keys (or `j`/`k`), see what the release will change and what it adds to the changelog, turn the push on or off with space, and release with enter. `esc` goes back, `q` quits. On enter the panel closes and kraken writes, commits, tags and pushes in the terminal, so git can ask for a passphrase or credentials there.
@@ -33,6 +34,25 @@ kraken undo [--yes] [--dry-run]
 - `kraken version --next` prints the version the next release gets, such as `1.5.0`, with the level taken from the commits, and changes nothing. With `--pre rc` it prints the pre-release that `kraken auto --pre rc` would make, such as `1.5.0-rc.1`. The changes and the level go to stderr, so `$(kraken version --next)` holds only the version. It fails with nothing to release, an existing tag or a shallow clone; in GitHub Actions use `fetch-depth: 0`.
 - `kraken changelog` creates `CHANGELOG.md` in the repository root and changes nothing else. In a repository with release tags, the new file has a section for each final release tag that HEAD contains, newest first, with a link for each one when origin is on a known host. It reads the tags in your clone, so run `git fetch --tags` first. A shallow clone is refused. Commit the file, and every release adds a section to it, see [how-it-works.md](how-it-works.md#changelog). An existing file stays as it is: if it has the kraken line, `kraken changelog` says so; if not, it fails and prints the line to add.
 - `kraken undo` removes the latest release while it is not pushed. It deletes the tag and drops the release commit, so the version files, the lock file and `CHANGELOG.md` go back to what they were. A release that only tagged HEAD loses just the tag. It lists what it will do and asks `[y/N]`; the default is no. `--yes` skips the question, and `--dry-run` only lists. Without a terminal it needs `--yes`. It checks origin first and refuses a release that is already there. See [Undo](how-it-works.md#undo).
+- `kraken completions bash`, `zsh` or `fish` prints the completion script for that shell and changes nothing. It works outside a git repository. See [Shell completions](#shell-completions).
+
+## Shell completions
+
+With completions loaded, Tab after `kraken` offers the levels, the subcommands and the flags, with their help text in zsh and fish. Add one line for your shell:
+
+| Shell | Add this | Where |
+|---|---|---|
+| fish | `kraken completions fish \| source` | `~/.config/fish/completions/kraken.fish` |
+| zsh | `source <(kraken completions zsh)` | `~/.zshrc`, after `compinit` |
+| bash | `eval "$(kraken completions bash)"` | `~/.bashrc` |
+
+These lines run kraken when the shell starts or loads completions, so the script always matches the installed kraken. bash uses `eval` because `source <(...)` does not work in the bash 3.2 that macOS ships.
+
+On Tab the script runs kraken, which answers from its own command line. It runs no git and takes a few milliseconds. A new flag or subcommand completes with no change to the script.
+
+The release archives have the same three scripts in `completions/`: `kraken.bash`, `_kraken` and `kraken.fish`. The Homebrew cask installs them too, so fish from Homebrew needs no setup. zsh needs `eval "$(brew shellenv)"` in `~/.zshrc` before `compinit`. bash needs the `bash-completion` formula and the snippet from Homebrew's [Shell Completion](https://docs.brew.sh/Shell-Completion) page in `~/.bash_profile`.
+
+After a level, Tab still lists the subcommands, such as `kraken minor <Tab>` offering `version`. kraken refuses that line when you run it.
 
 ## Without a terminal
 

@@ -5,9 +5,15 @@ project_name: kraken
 
 # The licenses of what kraken links ask for their texts in every copy. This also
 # fails on a license about.toml does not accept.
+# The completion scripts come from a host build of this commit and are the same
+# for every target. The zsh file is _kraken because zsh finds it by name.
 before:
   hooks:
     - cargo about generate --fail --output-file THIRD_PARTY_NOTICES about.hbs
+    - mkdir -p completions
+    - sh -c "cargo run --locked --quiet -- completions bash > completions/kraken.bash"
+    - sh -c "cargo run --locked --quiet -- completions zsh > completions/_kraken"
+    - sh -c "cargo run --locked --quiet -- completions fish > completions/kraken.fish"
 
 builds:
   - id: kraken
@@ -48,6 +54,7 @@ archives:
       - THIRD_PARTY_NOTICES
       # The README links to these guides.
       - docs/*.md
+      - completions/*
 
 changelog:
   use: github-native
@@ -57,6 +64,10 @@ homebrew_casks:
     description: Bump the version, tag the release and push it
     license: MIT
     skip_upload: auto
+    completions:
+      bash: completions/kraken.bash
+      zsh: completions/_kraken
+      fish: completions/kraken.fish
     repository:
       owner: ingvarch
       name: homebrew-tap

@@ -101,6 +101,27 @@ jobs:
           done
           exit $status
 
+      - name: archives and cask carry the completions
+        run: |
+          status=0
+          for archive in dist/kraken_*.tar.gz; do
+            contents=$(tar -tzf "$archive")
+            for script in completions/kraken.bash completions/_kraken completions/kraken.fish; do
+              if ! grep -qxF "$script" <<<"$contents"; then
+                echo "$archive is missing $script"
+                status=1
+              fi
+            done
+          done
+          for stanza in 'bash_completion "completions/kraken.bash"' 'zsh_completion "completions/_kraken"' 'fish_completion "completions/kraken.fish"'; do
+            if ! grep -qF "$stanza" dist/homebrew/Casks/kraken.rb; then
+              echo "the cask is missing $stanza"
+              status=1
+            fi
+          done
+          bash -n completions/kraken.bash || status=1
+          exit $status
+
       - uses: actions/setup-go@v7
         with:
           go-version: stable
