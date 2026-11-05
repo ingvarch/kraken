@@ -15,6 +15,29 @@ const PACKAGE_LOCK: &str = r#"{
   }
 }
 "#;
+const COMPOSER_JSON: &str = r#"{
+    "name": "acme/widget",
+    "description": "A widget",
+    "version": "1.2.3",
+    "type": "wordpress-plugin",
+    "require": {
+        "php": ">=8.1",
+        "psr/log": "^3.0"
+    },
+    "require-dev": {},
+    "autoload": { "psr-4": { "Acme\\Widget\\": "src/" } },
+    "extra": { "author": "Jürgen", "branch-alias": { "dev-main": "1.x-dev" } },
+    "config": { "sort-packages": true, "platform": { "php": "8.1" } }
+}
+"#;
+const COMPOSER_LOCK: &str = r#"{
+    "_readme": ["This file locks the dependencies."],
+    "content-hash": "ba6abe21b53dc5723447b7e88299a7b4",
+    "packages": [{ "name": "psr/log", "version": "3.0.0" }],
+    "plugin-api-version": "2.6.0"
+}
+"#;
+const COMPOSER_HASH_124: &str = "9ccd3108f58143b0fc888427a47fde1c";
 const CARGO_TOML: &str = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n";
 const CARGO_LOCK: &str = "version = 4\n\n[[package]]\nname = \"demo\"\nversion = \"0.1.0\"\n";
 const TEMPLATE: &str = kraken::changelog::TEMPLATE;
@@ -2584,4 +2607,90 @@ fn first_release_does_not_warn() {
 
     assert_ok(&out);
     assert!(!stderr(&out).contains("no commits"), "{}", stderr(&out));
+}
+
+fn composer_repo() -> Repo {
+    let repo = Repo::new();
+    repo.write("composer.json", COMPOSER_JSON);
+    repo.write("composer.lock", COMPOSER_LOCK);
+    repo
+}
+
+#[test]
+fn composer_patch_release_updates_the_lock_hash() {
+    let repo = composer_repo();
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("composer.json"),
+        COMPOSER_JSON.replace("1.2.3", "1.2.4")
+    );
+    assert_eq!(
+        repo.read("composer.lock"),
+        COMPOSER_LOCK.replace("ba6abe21b53dc5723447b7e88299a7b4", COMPOSER_HASH_124)
+    );
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "composer.json\ncomposer.lock"
+    );
+    assert_eq!(repo.tag_commit("v1.2.4"), repo.head());
+}
+
+#[test]
+fn composer_release_leaves_an_ignored_lock_out_of_the_commit() {
+    let repo = composer_repo();
+    repo.write(".gitignore", "composer.lock\n");
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(
+        repo.read("composer.lock"),
+        COMPOSER_LOCK.replace("ba6abe21b53dc5723447b7e88299a7b4", COMPOSER_HASH_124)
+    );
+    assert_eq!(
+        repo.git(&["show", "--name-only", "--format=", "HEAD"]),
+        "composer.json"
+    );
+    assert_eq!(repo.status(), "");
+}
+
+#[test]
+fn refuses_a_composer_lock_that_does_not_match() {
+    let repo = composer_repo();
+    repo.write(
+        "composer.lock",
+        &COMPOSER_LOCK.replace("ba6abe21b53dc5723447b7e88299a7b4", COMPOSER_HASH_124),
+    );
+    repo.commit_all();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_failed_with(
+        &out,
+        "composer.lock does not match composer.json; run `composer update --lock` first",
+    );
+    assert_eq!(repo.read("composer.json"), COMPOSER_JSON);
+    assert_eq!(repo.status(), "");
+    assert!(repo.tags().is_empty());
+}
+
+#[test]
+fn composer_json_without_a_version_releases_from_tags() {
+    let repo = Repo::new();
+    repo.write("composer.json", "{ \"name\": \"acme/app\" }\n");
+    repo.write("composer.lock", "{ \"content-hash\": \"stale\" }\n");
+    repo.commit_all();
+    repo.git(&["tag", "v0.4.0"]);
+    let head = repo.head();
+
+    let out = repo.kraken(&["patch", "--yes"]);
+
+    assert_ok(&out);
+    assert_eq!(repo.tag_commit("v0.4.1"), head);
+    assert_eq!(repo.head(), head);
 }

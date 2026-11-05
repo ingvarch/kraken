@@ -473,6 +473,7 @@ mod tests {
                 Kind::XcodeGen => "project.yml",
                 Kind::Xcode => "App.xcodeproj/project.pbxproj",
                 Kind::Pubspec => "pubspec.yaml",
+                Kind::Composer => "composer.json",
             }
             .to_string(),
             lock: None,

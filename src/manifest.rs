@@ -1,4 +1,5 @@
 mod cargo;
+mod composer;
 mod gradle;
 mod package_json;
 mod pubspec;
@@ -29,10 +30,11 @@ pub enum Kind {
     XcodeGen,
     Xcode,
     Pubspec,
+    Composer,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::PackageJson,
         Kind::CargoToml,
         Kind::Pyproject,
@@ -43,6 +45,7 @@ impl Kind {
         Kind::XcodeGen,
         Kind::Xcode,
         Kind::Pubspec,
+        Kind::Composer,
     ];
 
     /// The path of this kind's file in `root`, relative to it, or `None` when there is none.
@@ -62,6 +65,7 @@ impl Kind {
             Kind::Gradle => &["gradle.properties"],
             Kind::XcodeGen => &["project.yml"],
             Kind::Pubspec => &["pubspec.yaml"],
+            Kind::Composer => &["composer.json"],
             Kind::Xcode => return xcode::find(root, is_ignored),
         };
         for path in names.iter().filter_map(|name| existing(root, name)) {
@@ -80,6 +84,7 @@ impl Kind {
             Kind::Pyproject => "uv.lock",
             // The generated project is updated even when git ignores it.
             Kind::XcodeGen => return xcodegen::generated_project(root),
+            Kind::Composer => return composer::lock_file(root),
             Kind::VersionFile
             | Kind::Deno
             | Kind::Jsr
@@ -94,7 +99,9 @@ impl Kind {
 
     pub fn read_version(self, text: &str) -> Result<Option<String>> {
         match self {
-            Kind::PackageJson | Kind::Deno | Kind::Jsr => package_json::read_version(text),
+            Kind::PackageJson | Kind::Deno | Kind::Jsr | Kind::Composer => {
+                package_json::read_version(text)
+            }
             Kind::CargoToml => cargo::read_version(text),
             Kind::Pyproject => pyproject::read_version(text),
             Kind::VersionFile => version_file::read_version(text),
@@ -107,7 +114,9 @@ impl Kind {
 
     pub fn set_version(self, text: &str, version: &str) -> Result<String> {
         match self {
-            Kind::PackageJson | Kind::Deno | Kind::Jsr => package_json::set_version(text, version),
+            Kind::PackageJson | Kind::Deno | Kind::Jsr | Kind::Composer => {
+                package_json::set_version(text, version)
+            }
             Kind::CargoToml => cargo::set_version(text, version),
             Kind::Pyproject => pyproject::set_version(text, version),
             Kind::VersionFile => version_file::set_version(text, version),
@@ -131,7 +140,8 @@ impl Kind {
             | Kind::Gradle
             | Kind::XcodeGen
             | Kind::Xcode
-            | Kind::Pubspec => Ok(()),
+            | Kind::Pubspec
+            | Kind::Composer => Ok(()),
         }
     }
 
@@ -145,6 +155,7 @@ impl Kind {
             }
             Kind::Pyproject => pyproject::set_uv_lock_version(lock, version),
             Kind::XcodeGen => xcode::set_version(lock, version),
+            Kind::Composer => composer::set_lock_hash(root, lock),
             Kind::VersionFile
             | Kind::Deno
             | Kind::Jsr
@@ -533,6 +544,23 @@ mod tests {
             find(Kind::VersionFile, dir.path()).as_deref(),
             Some("VERSION")
         );
+    }
+
+    #[test]
+    fn composer_json_without_a_version_is_not_a_version_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("composer.json"),
+            r#"{ "name": "acme/app" }"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("composer.lock"),
+            r#"{ "content-hash": "0123456789abcdef0123456789abcdef" }"#,
+        )
+        .unwrap();
+
+        assert!(detect(dir.path(), |_| Ok(false)).unwrap().is_empty());
     }
 
     #[test]

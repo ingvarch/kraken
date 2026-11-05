@@ -19,6 +19,7 @@ kraken looks for version files in the repository root:
 | `jsr.json` or `jsr.jsonc` | `version` |
 | `gradle.properties` | the `version` line |
 | `pubspec.yaml` | the top-level `version`, up to the `+` |
+| `composer.json` | the top-level `version`, when it is set |
 | `project.yml` (XcodeGen) | every `MARKETING_VERSION:` line |
 | `<Name>.xcodeproj/project.pbxproj` | every `MARKETING_VERSION` line |
 | `VERSION` | the whole file: the text without the whitespace around it |
@@ -55,7 +56,7 @@ When the chosen level is lower than the suggestion, also a level from the comman
 
 ## Files it changes
 
-kraken rewrites only the version string; comments, quotes and formatting stay as they were. It sets the project's own entry in the lock file, if there is one: `package-lock.json`, `Cargo.lock` or `uv.lock`. For XcodeGen, the generated `<name>.xcodeproj/project.pbxproj`, named after `name` in `project.yml`, plays the lock file's part and gets the same version; other Xcode projects stay as they are. Nothing else in the lock file changes, and no network is needed. For Cargo, kraken reads the workspace members with `cargo metadata --no-deps` and refuses a version that a path dependency inside the workspace would not accept. If the repository root has a `CHANGELOG.md` with the kraken line, kraken adds a section to it, see [Changelog](#changelog).
+kraken rewrites only the version string; comments, quotes and formatting stay as they were. It sets the project's own entry in the lock file, if there is one: `package-lock.json`, `Cargo.lock` or `uv.lock`. For `composer.lock` kraken sets `content-hash`, the hash Composer keeps of `composer.json`, and refuses a `composer.lock` whose hash does not match `composer.json`. For XcodeGen, the generated `<name>.xcodeproj/project.pbxproj`, named after `name` in `project.yml`, plays the lock file's part and gets the same version; other Xcode projects stay as they are. Nothing else in the lock file changes, and no network is needed. For Cargo, kraken reads the workspace members with `cargo metadata --no-deps` and refuses a version that a path dependency inside the workspace would not accept. If the repository root has a `CHANGELOG.md` with the kraken line, kraken adds a section to it, see [Changelog](#changelog).
 
 ## Changelog
 
