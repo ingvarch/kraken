@@ -4,3 +4,5 @@
 /completions
 # setup-zig keeps the zig cache in the workspace.
 /.zig-cache
+# Local secrets, such as the crates.io token.
+.env
