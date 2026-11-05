@@ -474,6 +474,7 @@ mod tests {
                 Kind::Xcode => "App.xcodeproj/project.pbxproj",
                 Kind::Pubspec => "pubspec.yaml",
                 Kind::Composer => "composer.json",
+                Kind::WebExtension => "manifest.json",
             }
             .to_string(),
             lock: None,

@@ -5,11 +5,11 @@
 [![License](https://img.shields.io/github/license/ingvarch/kraken)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-dea584?logo=rust&logoColor=black)](Cargo.toml)
 
-kraken releases a project in one command: it bumps the version, commits, tags and pushes. It is for developers who release JavaScript, Deno, Rust, Python, PHP, Dart, Flutter, Gradle, Xcode, XcodeGen or Go projects from their own terminal and want the version files, the lock file and the tag to agree. kraken is made by Igor Churmeev.
+kraken releases a project in one command: it bumps the version, commits, tags and pushes. It is for developers who release JavaScript, Deno, Rust, Python, PHP, Dart, Flutter, Gradle, Xcode, XcodeGen, browser extension or Go projects from their own terminal and want the version files, the lock file and the tag to agree. kraken is made by Igor Churmeev.
 
 ## Features
 
-- Bumps patch, minor or major in `package.json`, `Cargo.toml`, `pyproject.toml`, `deno.json`, `jsr.json`, `gradle.properties`, `pubspec.yaml`, `composer.json`, an Xcode `project.pbxproj`, an XcodeGen `project.yml` or `VERSION`, or works with git tags alone
+- Bumps patch, minor or major in `package.json`, `Cargo.toml`, `pyproject.toml`, `deno.json`, `jsr.json`, `gradle.properties`, `pubspec.yaml`, `composer.json`, a browser extension's `manifest.json`, an Xcode `project.pbxproj`, an XcodeGen `project.yml` or `VERSION`, or works with git tags alone
 - Changes only the version string: comments, quotes and formatting stay
 - Updates the lock file with no network: the project's own entry in `package-lock.json`, `Cargo.lock` or `uv.lock`, and `content-hash` in `composer.lock`
 - Suggests patch, minor or major from the conventional commits since the latest tag and starts the panel on it; `kraken auto --yes` takes it in scripts

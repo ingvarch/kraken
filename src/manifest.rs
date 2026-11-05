@@ -5,6 +5,7 @@ mod package_json;
 mod pubspec;
 mod pyproject;
 mod version_file;
+mod web_extension;
 mod xcode;
 mod xcodegen;
 
@@ -31,10 +32,11 @@ pub enum Kind {
     Xcode,
     Pubspec,
     Composer,
+    WebExtension,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 11] = [
+    pub const ALL: [Kind; 12] = [
         Kind::PackageJson,
         Kind::CargoToml,
         Kind::Pyproject,
@@ -46,6 +48,7 @@ impl Kind {
         Kind::Xcode,
         Kind::Pubspec,
         Kind::Composer,
+        Kind::WebExtension,
     ];
 
     /// The path of this kind's file in `root`, relative to it, or `None` when there is none.
@@ -66,6 +69,7 @@ impl Kind {
             Kind::XcodeGen => &["project.yml"],
             Kind::Pubspec => &["pubspec.yaml"],
             Kind::Composer => &["composer.json"],
+            Kind::WebExtension => &["manifest.json"],
             Kind::Xcode => return xcode::find(root, is_ignored),
         };
         for path in names.iter().filter_map(|name| existing(root, name)) {
@@ -90,7 +94,8 @@ impl Kind {
             | Kind::Jsr
             | Kind::Gradle
             | Kind::Xcode
-            | Kind::Pubspec => {
+            | Kind::Pubspec
+            | Kind::WebExtension => {
                 return Ok(None);
             }
         };
@@ -109,6 +114,7 @@ impl Kind {
             Kind::XcodeGen => xcodegen::read_version(text),
             Kind::Xcode => xcode::read_version(text),
             Kind::Pubspec => pubspec::read_version(text),
+            Kind::WebExtension => web_extension::read_version(text),
         }
     }
 
@@ -124,6 +130,7 @@ impl Kind {
             Kind::XcodeGen => xcodegen::set_version(text, version),
             Kind::Xcode => xcode::set_version(text, version),
             Kind::Pubspec => pubspec::set_version(text, version),
+            Kind::WebExtension => web_extension::set_version(text, version),
         }
     }
 
@@ -141,7 +148,8 @@ impl Kind {
             | Kind::XcodeGen
             | Kind::Xcode
             | Kind::Pubspec
-            | Kind::Composer => Ok(()),
+            | Kind::Composer
+            | Kind::WebExtension => Ok(()),
         }
     }
 
@@ -161,7 +169,8 @@ impl Kind {
             | Kind::Jsr
             | Kind::Gradle
             | Kind::Xcode
-            | Kind::Pubspec => Ok(lock.to_string()),
+            | Kind::Pubspec
+            | Kind::WebExtension => Ok(lock.to_string()),
         }
     }
 }
@@ -561,6 +570,26 @@ mod tests {
         .unwrap();
 
         assert!(detect(dir.path(), |_| Ok(false)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn manifest_json_needs_manifest_version() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("manifest.json"),
+            r#"{ "name": "App", "start_url": "/", "version": "1.2.3" }"#,
+        )
+        .unwrap();
+        assert!(detect(dir.path(), |_| Ok(false)).unwrap().is_empty());
+
+        fs::write(
+            dir.path().join("manifest.json"),
+            r#"{ "manifest_version": 3, "version": "1.2.3" }"#,
+        )
+        .unwrap();
+        let found = detect(dir.path(), |_| Ok(false)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].kind, Kind::WebExtension);
     }
 
     #[test]
