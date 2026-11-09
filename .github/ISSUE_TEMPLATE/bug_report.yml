@@ -1,0 +1,37 @@
+name: Bug report
+description: Something in kraken does not work as documented
+labels: ["bug"]
+body:
+  - type: textarea
+    id: request
+    attributes:
+      label: What you did
+      description: The command you ran, such as `kraken minor --yes`. Remove tokens and secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: kraken's output or error.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened, with a link to the docs if they describe it.
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Version files
+      description: The version files and lock files in the repository root, such as `package.json` and `package-lock.json`, and their version lines.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `kraken --version`, how you installed kraken (Homebrew, cargo, .deb, .rpm, archive) and your OS.
+    validations:
+      required: true
