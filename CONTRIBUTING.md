@@ -22,7 +22,7 @@ Local setup and the checks are described in [docs/development.md](https://github
 5. Commit with a [conventional commit](https://www.conventionalcommits.org/) message:
    `type(scope): description`, imperative, lower case. kraken releases itself and suggests the level from these messages, so a `feat` makes the next release minor.
    - Types: `feat`, `fix`, `refactor`, `docs`, `chore`.
-   - Scopes: `manifests`, `changelog`, `cli`, `ui`, `git`, `release`, `ci`.
+   - Scopes: `manifests`, `changelog`, `cli`, `ui`, `git`, `release`, `ci`, `deps`, `github`; a docs commit names the file, such as `readme` or `agents`.
 6. Open a pull request and fill in the template. Link the issue it closes with `Closes #N`.
 
 Pull requests are merged with rebase or squash, so `main` keeps a linear history.

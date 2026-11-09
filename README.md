@@ -10,11 +10,11 @@ kraken releases a project in one command: it bumps the version, commits, tags an
 ## Features
 
 - Bumps the version in `package.json`, `Cargo.toml`, `pyproject.toml`, `deno.json`, `jsr.json`, `gradle.properties`, `pubspec.yaml`, `composer.json`, a browser extension's `manifest.json`, MSBuild, Xcode and XcodeGen projects or `VERSION`, or works with git tags alone
-- Changes only the version string and updates the project's own entry in the lock file, with no network
-- Suggests patch, minor or major from the conventional commits since the latest release; `kraken auto --yes` takes the suggestion in scripts
+- Changes only the version string and updates the lock file (`package-lock.json`, `Cargo.lock`, `uv.lock`, `composer.lock`) with no network
+- Suggests patch, minor or major from the conventional commits since the latest final release; `kraken auto --yes` takes the suggestion in scripts
 - Releases pre-releases such as `1.4.0-rc.1` with `--pre alpha|beta|rc`
-- Adds a section to `CHANGELOG.md` with compare links, and with `--github-release` makes a GitHub release with that section as notes
-- Checks the repository and origin's tags first, commits, tags and pushes in one atomic push, puts the files back if anything fails, and `kraken undo` removes a release that is not pushed
+- `kraken changelog` creates `CHANGELOG.md` with the past releases, and every release then adds its section, with compare links on GitHub, GitLab and Codeberg; `--github-release` makes a GitHub release with that section as notes
+- Checks the repository and origin's tags first, commits, tags and pushes in one atomic push, puts HEAD and the files back if anything fails before the tag, and `kraken undo` removes a release that is not pushed
 - A full-screen panel for releases by hand, `--yes` and `--dry-run` for scripts, and completions for bash, zsh and fish
 
 ## Usage
@@ -68,4 +68,4 @@ MIT, see [LICENSE](LICENSE).
 
 ## Contributing
 
-Bug reports and pull requests are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
+Bug reports and pull requests are welcome, see [CONTRIBUTING.md](https://github.com/ingvarch/kraken/blob/main/CONTRIBUTING.md).
