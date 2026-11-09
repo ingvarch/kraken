@@ -65,3 +65,7 @@ cargo run -- patch --dry-run
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+## Contributing
+
+Bug reports and pull requests are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md).
